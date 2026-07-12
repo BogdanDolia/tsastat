@@ -1,100 +1,173 @@
 # tsastat
 
-`tsastat` is a Linux-only CLI for sampled thread state analysis. It behaves
-similarly to `pidstat(1)`: point it at a process, choose a report interval, and
-it prints rolling per-thread state statistics. By default it samples `/proc`
-every 10ms and aggregates those observations into each report.
+[![CI](https://github.com/BogdanDolia/tsastat/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/BogdanDolia/tsastat/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/BogdanDolia/tsastat)](https://github.com/BogdanDolia/tsastat/releases)
+[![Go version](https://img.shields.io/github/go-mod/go-version/BogdanDolia/tsastat)](https://go.dev/)
+[![License](https://img.shields.io/github/license/BogdanDolia/tsastat)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Linux-blue)](#requirements)
 
-The MVP uses `/proc/<pid>/task/<tid>/stat` polling. The proc backend is a
-sampling approximation. It can miss short-lived state transitions between
-samples.
-
-## Build
-
-```bash
-go build ./cmd/tsastat
-go test ./...
-```
-
-## Examples
-
-```bash
-tsastat -p 1234 1
-tsastat -p 1234 -i 1s --sample 10ms --count 5
-tsastat -p 1234 -i 500ms --sample 20ms --sort running
-tsastat -p 1234 -i 1s --sample 10ms --output json > thread-states.jsonl
-```
-
-Future backends are visible but not implemented:
-
-```bash
-tsastat -p 1234 -i 1s --backend taskstats
-tsastat -p 1234 -i 1s --backend ebpf
-```
-
-Both return clear errors until those backends exist.
-
-## Table Output
+`tsastat` is a lightweight Linux CLI for sampled per-thread state analysis.
+Point it at a process to see which threads are running, sleeping, waiting on
+I/O, stopped, or becoming zombies during each reporting interval.
 
 ```text
 tsastat: pid=4242 backend=proc interval=1s sample=10ms
 
 TIME      PID   TID   COMM          RUN_ms  SLEEP_ms  D_ms  STOP_ms  Z_ms  RUN_%  SLEEP_%  D_%
-12:10:01  4242  4242  nginx         0       1000      0     0        0     0.0    100.0    0.0
-12:10:01  4242  4243  nginx-worker  42      958       0     0        0     4.2    95.8     0.0
-12:10:01  4242  4244  nginx-worker  130     870       0     0        0     13.0   87.0     0.0
+12:10:01  4242  4242  app           18      982       0     0        0     1.8    98.2     0.0
+12:10:01  4242  4243  worker-1      240     760       0     0        0     24.0   76.0     0.0
+12:10:01  4242  4244  io-worker     10      900       90    0        0     1.0    90.0     9.0
 ```
 
-Use `--no-header` to suppress table headers for scripts.
+> [!IMPORTANT]
+> The current `proc` backend is a sampling approximation, not a scheduler
+> timeline. It can miss state transitions that happen between samples.
 
-## JSON Output
+## Why tsastat?
 
-`--output json` prints JSON Lines, one object per interval:
+Tools such as `top` and `pidstat` provide broad process statistics. `tsastat`
+focuses on one question: **how did each thread of this process spend the
+observed interval?**
+
+It is useful for:
+
+- finding unexpectedly busy or permanently sleeping threads;
+- spotting threads observed in uninterruptible I/O wait (`D`);
+- comparing thread behavior before and during a workload;
+- exporting interval data as JSON Lines for later analysis;
+- learning how Linux exposes task state through procfs.
+
+## Requirements
+
+- Linux with procfs mounted at `/proc`;
+- Go 1.22 or newer to build from source;
+- permission to read `/proc/<pid>/task` for the target process.
+
+The `proc` backend does not normally require root when inspecting your own
+processes.
+
+## Installation
+
+The current release contains source archives. Build the CLI with Go:
+
+```bash
+git clone https://github.com/BogdanDolia/tsastat.git
+cd tsastat
+go build -o tsastat ./cmd/tsastat
+```
+
+Optionally install it on your `PATH`:
+
+```bash
+sudo install -m 0755 tsastat /usr/local/bin/tsastat
+```
+
+## Quick start
+
+Check which backends are available:
+
+```bash
+tsastat doctor
+```
+
+Monitor a process for ten one-second intervals while sampling every 10ms:
+
+```bash
+tsastat -p 1234 --sample 10ms --interval 1s --count 10
+```
+
+Show the most active threads first:
+
+```bash
+tsastat -p 1234 --sample 10ms --interval 1s --sort running
+```
+
+The report interval can also be passed positionally:
+
+```bash
+tsastat -p 1234 1
+```
+
+Press `Ctrl-C` to stop continuous monitoring.
+
+## Common options
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `-p`, `--pid` | Target process ID | required |
+| `-i`, `--interval` | Time between aggregated reports | required |
+| `--sample` | Time between procfs samples | `10ms` |
+| `-c`, `--count` | Number of reports; omitted means continuous | continuous |
+| `--tid` | Show only one thread ID | all threads |
+| `--comm` | Filter thread names by substring or glob | no filter |
+| `--sort` | Sort by `tid`, `comm`, `running`, `sleeping`, `uninterruptible`, or `total` | `tid` |
+| `-o`, `--output` | Output format: `table` or `json` | `table` |
+| `--show-idle` | Include threads observed only in the idle state | disabled |
+| `--no-header` | Suppress table headers | disabled |
+
+The sampling interval must be shorter than the report interval. Shorter
+sampling intervals can capture more transitions, but they also add overhead.
+
+## JSON Lines output
+
+Use JSON Lines when piping data into tools such as `jq` or saving it for later:
+
+```bash
+tsastat -p 1234 --sample 10ms --interval 1s --count 10 \
+  --output json > thread-states.jsonl
+```
+
+Each line represents one reporting interval:
 
 ```json
-{"timestamp":"2026-05-08T12:01:01Z","pid":1234,"backend":"proc","interval_ms":1000,"sample_interval_ms":10,"threads":[{"tid":1235,"comm":"java-worker-1","durations_ms":{"running":120,"sleeping":870,"uninterruptible":10,"stopped":0,"tracing_stop":0,"zombie":0},"percent":{"running":12,"sleeping":87,"uninterruptible":1}}]}
+{"timestamp":"2026-05-08T12:01:01Z","pid":1234,"backend":"proc","interval_ms":1000,"sample_interval_ms":10,"threads":[{"tid":1235,"comm":"worker-1","durations_ms":{"running":120,"sleeping":870,"uninterruptible":10,"stopped":0,"tracing_stop":0,"zombie":0},"percent":{"running":12,"sleeping":87,"uninterruptible":1}}]}
 ```
 
-This format is intended for tools such as `jq`.
+## Linux thread states
 
-## Linux Thread States
+| procfs letter | Reported state | Meaning |
+| --- | --- | --- |
+| `R` | `running` | Running or runnable |
+| `S` | `sleeping` | Interruptible sleep |
+| `D` | `uninterruptible` | Usually waiting for I/O |
+| `T` | `stopped` | Stopped by job control or a signal |
+| `t` | `tracing_stop` | Stopped while being traced |
+| `Z` | `zombie` | Exited but not yet reaped |
+| `X`, `x` | `dead` | Dead task |
+| `I` | `idle` | Idle kernel thread |
 
-The proc backend maps Linux state letters to normalized states:
+`R` includes runnable threads waiting for CPU time. It does not prove that a
+thread was actively executing for the entire attributed duration.
 
-| Letter | State |
-| --- | --- |
-| `R` | `running` |
-| `S` | `sleeping` |
-| `D` | `uninterruptible` |
-| `T` | `stopped` |
-| `t` | `tracing_stop` |
-| `Z` | `zombie` |
-| `X`, `x` | `dead` |
-| `I` | `idle` |
-| other | `unknown` |
+## Accuracy and limitations
 
-`R` means running or runnable. It does not necessarily mean the thread was
-actively on CPU for the whole interval.
+The procfs backend reads `/proc/<pid>/task/<tid>/stat` repeatedly. The time
+between two samples is attributed to the state seen in the earlier sample.
+Multiple samples are accumulated into each report.
 
-## Polling Limitations
+Consequences of this approach:
 
-The proc backend samples states repeatedly within each report interval and
-attributes the time until the next sample to the previously observed state.
-`--sample` controls the sampling interval; `--interval` controls how often an
-aggregated report is printed. This is simple and automatable, but it is not a
-scheduler timeline.
+- transitions shorter than the sampling interval can be missed;
+- accuracy and overhead depend on `--sample`;
+- report windows can be slightly longer than requested because of scheduling;
+- disappearing threads are finalized at the next process snapshot;
+- new threads are tracked from their first observation;
+- percentages describe sampled state, not exact on-CPU time.
 
-Limitations:
+Use scheduler tracing with `perf`, ftrace, or eBPF when exact event timing is
+required.
 
-- short-lived transitions between samples can be missed;
-- accuracy and overhead depend on the sampling interval;
-- `R` includes runnable threads waiting on CPU;
-- disappearing threads are finalized using the next process snapshot time;
-- threads that appear between samples are tracked from their first observation.
+## Backends
 
-## Backend Architecture
+| Backend | Status | Semantics |
+| --- | --- | --- |
+| `proc` | Available | Sampled observed thread state |
+| `taskstats` | Planned | Linux Delay Accounting counters |
+| `ebpf` | Planned | Event-driven scheduler timeline |
 
-The code is layered:
+Run `tsastat doctor` to see backend availability and relevant kernel warnings.
+
+## Architecture
 
 ```text
 CLI
@@ -105,7 +178,7 @@ CLI
   -> output renderer
 ```
 
-The backend interface is intentionally small for the MVP:
+The backend interface is deliberately small:
 
 ```go
 type Backend interface {
@@ -116,76 +189,34 @@ type Backend interface {
 }
 ```
 
-The current backend semantics are:
+Backends with different semantics are not treated as interchangeable ground
+truth.
 
-- `proc`: sampled observed thread state;
-- `taskstats`: future Linux Delay Accounting counters;
-- `ebpf`: future event-driven scheduler timeline.
+## Development
 
-These sources are not treated as interchangeable ground truth.
-
-## Why Taskstats Is Future/Experimental
-
-The taskstats backend, when implemented, should not be treated as exact live
-thread-state tracing. It exposes Linux Delay Accounting counters and may be
-affected by lazy accounting on modern kernels.
-
-Taskstats also depends on kernel configuration, runtime delay accounting, and
-privileges. A future implementation must parse Generic Netlink TLVs safely,
-validate lengths, avoid unsafe binary casts, validate taskstats versions, and
-include binary fixture tests.
-
-## Why eBPF Is the Accurate Future Backend
-
-An eBPF backend can observe scheduler events rather than periodic snapshots.
-That makes it the right long-term direction for precise scheduler-event
-analysis, runnable wait time, on-CPU time, wakeups, and context switches.
-
-Likely tracepoints:
-
-- `sched:sched_switch`
-- `sched:sched_wakeup`
-- `sched:sched_wakeup_new`
-- `sched:sched_process_exit`
-
-## Doctor
+Format, test, vet, and build before opening a pull request:
 
 ```bash
-tsastat doctor
+gofmt -w .
+go test -race ./...
+go vet ./...
+go build ./cmd/tsastat
 ```
 
-Example:
-
-```text
-proc backend:
-  status: OK
-  reason: /proc is available and readable
-
-taskstats backend:
-  status: NOT IMPLEMENTED
-  warning: taskstats depends on CONFIG_TASKSTATS, CONFIG_TASK_DELAY_ACCT, and kernel.task_delayacct
-  warning: taskstats counters may be lazily updated and should not be treated as exact live thread-state transitions
-
-ebpf backend:
-  status: NOT IMPLEMENTED
-  warning: eBPF backend will require scheduler tracepoints and appropriate capabilities
-```
-
-Doctor reports future backend limitations without failing the whole command.
+GitHub Actions runs these checks on every pull request and every push to
+`main`.
 
 ## Roadmap
 
-1. CSV output.
-2. Process-level summary rows.
-3. Better sorting.
-4. Better filtering.
-5. `--all-threads` and `--top` modes.
-6. Experimental taskstats backend.
-7. Taskstats doctor checks.
-8. eBPF backend using scheduler tracepoints.
-9. Runnable wait time.
-10. On-CPU time.
-11. Context switch counters.
-12. Wakeup counters.
-13. Optional TUI frontend.
-14. Performance tests with high thread counts.
+- process-level summary rows;
+- CSV output;
+- multi-process and process-tree monitoring;
+- experimental taskstats support;
+- eBPF scheduler-event tracing;
+- runnable wait and on-CPU time;
+- context-switch and wakeup counters;
+- optional TUI frontend.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
