@@ -9,29 +9,32 @@ import (
 )
 
 type JSONRenderer struct {
-	encoder  *json.Encoder
-	pid      int
-	backend  string
-	interval time.Duration
+	encoder        *json.Encoder
+	pid            int
+	backend        string
+	interval       time.Duration
+	sampleInterval time.Duration
 }
 
-func NewJSONRenderer(w io.Writer, pid int, backendName string, interval time.Duration) *JSONRenderer {
+func NewJSONRenderer(w io.Writer, pid int, backendName string, interval, sampleInterval time.Duration) *JSONRenderer {
 	enc := json.NewEncoder(w)
 	return &JSONRenderer{
-		encoder:  enc,
-		pid:      pid,
-		backend:  backendName,
-		interval: interval,
+		encoder:        enc,
+		pid:            pid,
+		backend:        backendName,
+		interval:       interval,
+		sampleInterval: sampleInterval,
 	}
 }
 
 func (r *JSONRenderer) Render(stats []model.ThreadIntervalStats) error {
 	event := jsonInterval{
-		Timestamp:  intervalTimestamp(stats).UTC().Format(time.RFC3339Nano),
-		PID:        r.pid,
-		Backend:    r.backend,
-		IntervalMS: r.interval.Milliseconds(),
-		Threads:    make([]jsonThread, 0, len(stats)),
+		Timestamp:        intervalTimestamp(stats).UTC().Format(time.RFC3339Nano),
+		PID:              r.pid,
+		Backend:          r.backend,
+		IntervalMS:       r.interval.Milliseconds(),
+		SampleIntervalMS: r.sampleInterval.Milliseconds(),
+		Threads:          make([]jsonThread, 0, len(stats)),
 	}
 
 	for _, stat := range stats {
@@ -47,11 +50,12 @@ func (r *JSONRenderer) Render(stats []model.ThreadIntervalStats) error {
 }
 
 type jsonInterval struct {
-	Timestamp  string       `json:"timestamp"`
-	PID        int          `json:"pid"`
-	Backend    string       `json:"backend"`
-	IntervalMS int64        `json:"interval_ms"`
-	Threads    []jsonThread `json:"threads"`
+	Timestamp        string       `json:"timestamp"`
+	PID              int          `json:"pid"`
+	Backend          string       `json:"backend"`
+	IntervalMS       int64        `json:"interval_ms"`
+	SampleIntervalMS int64        `json:"sample_interval_ms"`
+	Threads          []jsonThread `json:"threads"`
 }
 
 type jsonThread struct {

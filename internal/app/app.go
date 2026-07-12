@@ -52,12 +52,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	defer b.Close()
 
 	renderer, err := output.NewRenderer(output.RendererOptions{
-		Format:   cfg.Output,
-		Writer:   stdout,
-		PID:      cfg.PID,
-		Backend:  b.Name(),
-		Interval: cfg.Interval,
-		NoHeader: cfg.NoHeader,
+		Format:         cfg.Output,
+		Writer:         stdout,
+		PID:            cfg.PID,
+		Backend:        b.Name(),
+		Interval:       cfg.Interval,
+		SampleInterval: cfg.SampleInterval,
+		NoHeader:       cfg.NoHeader,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -65,13 +66,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if cfg.Output == "table" && !cfg.NoHeader {
-		fmt.Fprintf(stdout, "tsastat: pid=%d backend=%s interval=%s\n\n", cfg.PID, b.Name(), cfg.Interval)
+		fmt.Fprintf(stdout, "tsastat: pid=%d backend=%s interval=%s sample=%s\n\n", cfg.PID, b.Name(), cfg.Interval, cfg.SampleInterval)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	c := collector.New(b, cfg.PID, cfg.Interval)
+	c := collector.New(b, cfg.PID, cfg.Interval, cfg.SampleInterval)
 	err = c.Run(ctx, cfg.Count, func(stats []model.ThreadIntervalStats) error {
 		filtered, err := output.FilterAndSort(stats, output.FilterSortOptions{
 			TID:      cfg.TID,

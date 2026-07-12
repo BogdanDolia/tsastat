@@ -1,8 +1,9 @@
 # tsastat
 
 `tsastat` is a Linux-only CLI for sampled thread state analysis. It behaves
-similarly to `pidstat(1)`: point it at a process, choose an interval, and it
-prints rolling per-thread state statistics.
+similarly to `pidstat(1)`: point it at a process, choose a report interval, and
+it prints rolling per-thread state statistics. By default it samples `/proc`
+every 10ms and aggregates those observations into each report.
 
 The MVP uses `/proc/<pid>/task/<tid>/stat` polling. The proc backend is a
 sampling approximation. It can miss short-lived state transitions between
@@ -19,9 +20,9 @@ go test ./...
 
 ```bash
 tsastat -p 1234 1
-tsastat -p 1234 -i 1s --count 5
-tsastat -p 1234 -i 500ms --sort running
-tsastat -p 1234 -i 1s --output json > thread-states.jsonl
+tsastat -p 1234 -i 1s --sample 10ms --count 5
+tsastat -p 1234 -i 500ms --sample 20ms --sort running
+tsastat -p 1234 -i 1s --sample 10ms --output json > thread-states.jsonl
 ```
 
 Future backends are visible but not implemented:
@@ -36,7 +37,7 @@ Both return clear errors until those backends exist.
 ## Table Output
 
 ```text
-tsastat: pid=4242 backend=proc interval=1s
+tsastat: pid=4242 backend=proc interval=1s sample=10ms
 
 TIME      PID   TID   COMM          RUN_ms  SLEEP_ms  D_ms  STOP_ms  Z_ms  RUN_%  SLEEP_%  D_%
 12:10:01  4242  4242  nginx         0       1000      0     0        0     0.0    100.0    0.0
@@ -51,7 +52,7 @@ Use `--no-header` to suppress table headers for scripts.
 `--output json` prints JSON Lines, one object per interval:
 
 ```json
-{"timestamp":"2026-05-08T12:01:01Z","pid":1234,"backend":"proc","interval_ms":1000,"threads":[{"tid":1235,"comm":"java-worker-1","durations_ms":{"running":120,"sleeping":870,"uninterruptible":10,"stopped":0,"tracing_stop":0,"zombie":0},"percent":{"running":12,"sleeping":87,"uninterruptible":1}}]}
+{"timestamp":"2026-05-08T12:01:01Z","pid":1234,"backend":"proc","interval_ms":1000,"sample_interval_ms":10,"threads":[{"tid":1235,"comm":"java-worker-1","durations_ms":{"running":120,"sleeping":870,"uninterruptible":10,"stopped":0,"tracing_stop":0,"zombie":0},"percent":{"running":12,"sleeping":87,"uninterruptible":1}}]}
 ```
 
 This format is intended for tools such as `jq`.
@@ -77,14 +78,16 @@ actively on CPU for the whole interval.
 
 ## Polling Limitations
 
-The proc backend samples the state observed at each interval and attributes the
-time until the next sample to that previously observed state. This is simple and
-automatable, but it is not a scheduler timeline.
+The proc backend samples states repeatedly within each report interval and
+attributes the time until the next sample to the previously observed state.
+`--sample` controls the sampling interval; `--interval` controls how often an
+aggregated report is printed. This is simple and automatable, but it is not a
+scheduler timeline.
 
 Limitations:
 
 - short-lived transitions between samples can be missed;
-- accuracy depends on the sampling interval;
+- accuracy and overhead depend on the sampling interval;
 - `R` includes runnable threads waiting on CPU;
 - disappearing threads are finalized using the next process snapshot time;
 - threads that appear between samples are tracked from their first observation.
