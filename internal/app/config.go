@@ -9,7 +9,8 @@ import (
 	"time"
 )
 
-const Version = "dev"
+// Version is replaced at release time through the Go linker -X flag.
+var Version = "dev"
 
 type Config struct {
 	PID            int

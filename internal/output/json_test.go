@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"tsastat/internal/model"
+	"github.com/BogdanDolia/tsastat/internal/model"
 )
 
 func TestJSONOutputIsJSONLines(t *testing.T) {

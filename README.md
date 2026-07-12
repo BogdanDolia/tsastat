@@ -48,7 +48,9 @@ processes.
 
 ## Installation
 
-The current release contains source archives. Build the CLI with Go:
+Download a prebuilt archive from the
+[latest release](https://github.com/BogdanDolia/tsastat/releases/latest) when
+available, or build the CLI with Go:
 
 ```bash
 git clone https://github.com/BogdanDolia/tsastat.git
@@ -205,6 +207,13 @@ go build ./cmd/tsastat
 
 GitHub Actions runs these checks on every pull request and every push to
 `main`.
+
+## Releases
+
+Pushing a semantic version tag such as `v0.0.2` runs GoReleaser. The release
+workflow publishes Linux AMD64 and ARM64 archives, a SHA-256 checksum file, and
+build provenance attestations. Release binaries report their version through
+`tsastat --version`.
 
 ## Roadmap
 

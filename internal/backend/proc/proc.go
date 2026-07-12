@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"time"
 
-	"tsastat/internal/model"
-	"tsastat/internal/procfs"
+	"github.com/BogdanDolia/tsastat/internal/model"
+	"github.com/BogdanDolia/tsastat/internal/procfs"
 )
 
 type Backend struct {

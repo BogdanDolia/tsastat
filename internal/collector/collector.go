@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"tsastat/internal/backend"
-	"tsastat/internal/model"
+	"github.com/BogdanDolia/tsastat/internal/backend"
+	"github.com/BogdanDolia/tsastat/internal/model"
 )
 
 type Collector struct {

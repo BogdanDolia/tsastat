@@ -3,7 +3,7 @@ package backend
 import (
 	"context"
 
-	"tsastat/internal/model"
+	"github.com/BogdanDolia/tsastat/internal/model"
 )
 
 type Backend interface {

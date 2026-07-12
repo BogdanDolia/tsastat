@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 
-	"tsastat/internal/backend/ebpf"
-	"tsastat/internal/backend/proc"
-	"tsastat/internal/backend/taskstats"
-	"tsastat/internal/model"
+	"github.com/BogdanDolia/tsastat/internal/backend/ebpf"
+	"github.com/BogdanDolia/tsastat/internal/backend/proc"
+	"github.com/BogdanDolia/tsastat/internal/backend/taskstats"
+	"github.com/BogdanDolia/tsastat/internal/model"
 )
 
 var (

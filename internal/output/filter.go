@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"tsastat/internal/model"
+	"github.com/BogdanDolia/tsastat/internal/model"
 )
 
 type FilterSortOptions struct {
