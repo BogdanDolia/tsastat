@@ -1,6 +1,6 @@
 package taskstats
 
-import "tsastat/internal/model"
+import "github.com/BogdanDolia/tsastat/internal/model"
 
 func Capabilities() model.BackendCapabilities {
 	return model.BackendCapabilities{

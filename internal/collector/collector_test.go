@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"tsastat/internal/model"
+	"github.com/BogdanDolia/tsastat/internal/model"
 )
 
 func TestCollectorSamplesRepeatedlyBeforeReport(t *testing.T) {

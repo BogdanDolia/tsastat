@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"tsastat/internal/app"
+	"github.com/BogdanDolia/tsastat/internal/app"
 )
 
 func main() {

@@ -7,9 +7,9 @@ import (
 	"runtime"
 	"strings"
 
-	"tsastat/internal/backend/ebpf"
-	"tsastat/internal/backend/proc"
-	"tsastat/internal/backend/taskstats"
+	"github.com/BogdanDolia/tsastat/internal/backend/ebpf"
+	"github.com/BogdanDolia/tsastat/internal/backend/proc"
+	"github.com/BogdanDolia/tsastat/internal/backend/taskstats"
 )
 
 func Run(w io.Writer) error {

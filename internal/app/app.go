@@ -9,11 +9,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"tsastat/internal/backend"
-	"tsastat/internal/collector"
-	"tsastat/internal/doctor"
-	"tsastat/internal/model"
-	"tsastat/internal/output"
+	"github.com/BogdanDolia/tsastat/internal/backend"
+	"github.com/BogdanDolia/tsastat/internal/collector"
+	"github.com/BogdanDolia/tsastat/internal/doctor"
+	"github.com/BogdanDolia/tsastat/internal/model"
+	"github.com/BogdanDolia/tsastat/internal/output"
 )
 
 func Run(args []string, stdout, stderr io.Writer) int {

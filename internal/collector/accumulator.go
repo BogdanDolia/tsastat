@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	"tsastat/internal/model"
+	"github.com/BogdanDolia/tsastat/internal/model"
 )
 
 type Accumulator struct {
