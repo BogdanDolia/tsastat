@@ -11,7 +11,7 @@ import (
 
 func TestJSONOutputIsJSONLines(t *testing.T) {
 	var buf bytes.Buffer
-	renderer := NewJSONRenderer(&buf, 123, "proc", time.Second)
+	renderer := NewJSONRenderer(&buf, 123, "proc", time.Second, 10*time.Millisecond)
 	err := renderer.Render([]model.ThreadIntervalStats{
 		{
 			PID:           123,
@@ -32,6 +32,9 @@ func TestJSONOutputIsJSONLines(t *testing.T) {
 	}
 	if decoded["backend"] != "proc" {
 		t.Fatalf("backend = %v, want proc", decoded["backend"])
+	}
+	if decoded["sample_interval_ms"] != float64(10) {
+		t.Fatalf("sample_interval_ms = %v, want 10", decoded["sample_interval_ms"])
 	}
 	if _, ok := decoded["threads"].([]any); !ok {
 		t.Fatalf("threads missing or wrong type: %#v", decoded["threads"])

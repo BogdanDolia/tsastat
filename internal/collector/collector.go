@@ -10,18 +10,20 @@ import (
 )
 
 type Collector struct {
-	backend  backend.Backend
-	pid      int
-	interval time.Duration
-	acc      *Accumulator
+	backend        backend.Backend
+	pid            int
+	interval       time.Duration
+	sampleInterval time.Duration
+	acc            *Accumulator
 }
 
-func New(b backend.Backend, pid int, interval time.Duration) *Collector {
+func New(b backend.Backend, pid int, interval, sampleInterval time.Duration) *Collector {
 	return &Collector{
-		backend:  b,
-		pid:      pid,
-		interval: interval,
-		acc:      NewAccumulator(),
+		backend:        b,
+		pid:            pid,
+		interval:       interval,
+		sampleInterval: sampleInterval,
+		acc:            NewAccumulator(),
 	}
 }
 
@@ -31,15 +33,20 @@ func (c *Collector) Run(ctx context.Context, count int, emit func([]model.Thread
 		return err
 	}
 	c.acc.Observe(samples)
+	windowStart, ok := snapshotTime(samples)
+	if !ok {
+		windowStart = time.Now()
+	}
+	nextReport := windowStart.Add(c.interval)
+	ticker := time.NewTicker(c.sampleInterval)
+	defer ticker.Stop()
 
 	emitted := 0
 	for count <= 0 || emitted < count {
-		timer := time.NewTimer(c.interval)
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 			return nil
-		case <-timer.C:
+		case <-ticker.C:
 		}
 
 		samples, err := c.backend.Snapshot(ctx, c.pid)
@@ -50,7 +57,17 @@ func (c *Collector) Run(ctx context.Context, count int, emit func([]model.Thread
 			return err
 		}
 
-		stats := c.acc.Observe(samples)
+		c.acc.Observe(samples)
+		now, ok := snapshotTime(samples)
+		if !ok {
+			now = time.Now()
+		}
+		if now.Before(nextReport) {
+			continue
+		}
+		nextReport = now.Add(c.interval)
+
+		stats := c.acc.Flush()
 		if len(stats) == 0 {
 			continue
 		}

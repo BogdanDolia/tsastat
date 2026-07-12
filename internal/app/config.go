@@ -12,17 +12,18 @@ import (
 const Version = "dev"
 
 type Config struct {
-	PID      int
-	Interval time.Duration
-	Count    int
-	Backend  string
-	Output   string
-	TID      int
-	Comm     string
-	ShowIdle bool
-	Sort     string
-	NoHeader bool
-	Version  bool
+	PID            int
+	Interval       time.Duration
+	SampleInterval time.Duration
+	Count          int
+	Backend        string
+	Output         string
+	TID            int
+	Comm           string
+	ShowIdle       bool
+	Sort           string
+	NoHeader       bool
+	Version        bool
 }
 
 func parseConfig(args []string, stderr io.Writer) (Config, error) {
@@ -30,6 +31,7 @@ func parseConfig(args []string, stderr io.Writer) (Config, error) {
 	cfg.Backend = "proc"
 	cfg.Output = "table"
 	cfg.Sort = "tid"
+	cfg.SampleInterval = 10 * time.Millisecond
 
 	fs := flag.NewFlagSet("tsastat", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -39,12 +41,15 @@ func parseConfig(args []string, stderr io.Writer) (Config, error) {
 	}
 
 	intervalValue := durationFlag{}
+	sampleValue := durationFlag{value: cfg.SampleInterval}
 	countValue := countFlag{}
 
 	fs.IntVar(&cfg.PID, "p", 0, "target process ID")
 	fs.IntVar(&cfg.PID, "pid", 0, "target process ID")
-	fs.Var(&intervalValue, "i", "sampling interval (for example 500ms, 1s, 2s)")
-	fs.Var(&intervalValue, "interval", "sampling interval (for example 500ms, 1s, 2s)")
+	fs.Var(&intervalValue, "i", "report interval (for example 500ms, 1s, 2s)")
+	fs.Var(&intervalValue, "interval", "report interval (for example 500ms, 1s, 2s)")
+	fs.Var(&sampleValue, "sample", "proc sampling interval")
+	fs.Var(&sampleValue, "sample-interval", "proc sampling interval")
 	fs.Var(&countValue, "c", "number of intervals to print")
 	fs.Var(&countValue, "count", "number of intervals to print")
 	fs.StringVar(&cfg.Backend, "b", cfg.Backend, "backend: proc, taskstats, ebpf")
@@ -63,6 +68,7 @@ func parseConfig(args []string, stderr io.Writer) (Config, error) {
 	}
 
 	cfg.Interval = intervalValue.value
+	cfg.SampleInterval = sampleValue.value
 	cfg.Count = countValue.value
 
 	if cfg.Version {
@@ -93,6 +99,12 @@ func parseConfig(args []string, stderr io.Writer) (Config, error) {
 	}
 	if cfg.Interval <= 0 {
 		return cfg, fmt.Errorf("invalid interval %s", cfg.Interval)
+	}
+	if cfg.SampleInterval <= 0 {
+		return cfg, fmt.Errorf("invalid sample interval %s", cfg.SampleInterval)
+	}
+	if cfg.SampleInterval >= cfg.Interval {
+		return cfg, fmt.Errorf("sample interval %s must be shorter than report interval %s", cfg.SampleInterval, cfg.Interval)
 	}
 	if countValue.set && cfg.Count <= 0 {
 		return cfg, fmt.Errorf("invalid count %d", cfg.Count)
@@ -178,17 +190,18 @@ func (f *countFlag) Set(raw string) error {
 func usage() string {
 	return `Usage:
   tsastat -p <pid> <interval>
-  tsastat -p <pid> -i <duration> [--count n]
+  tsastat -p <pid> -i <duration> [--sample duration] [--count n]
   tsastat doctor
 
 Examples:
   tsastat -p 1234 1
-  tsastat -p 1234 -i 500ms --count 10
-  tsastat -p 1234 -i 1s --output json
+  tsastat -p 1234 -i 1s --sample 10ms --count 10
+  tsastat -p 1234 -i 1s --sample 20ms --output json
 
-tsastat samples Linux thread states. The proc backend is a sampling
-approximation: it can miss short-lived state transitions between samples,
-and R means running or runnable, not necessarily actively on CPU.
+tsastat samples Linux thread states repeatedly within each report interval.
+The proc backend is a sampling approximation: it can miss short-lived state
+transitions between samples, and R means running or runnable, not necessarily
+actively on CPU.
 
 Flags:
 `

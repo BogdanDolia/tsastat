@@ -16,12 +16,13 @@ type Renderer interface {
 }
 
 type RendererOptions struct {
-	Format   string
-	Writer   io.Writer
-	PID      int
-	Backend  string
-	Interval time.Duration
-	NoHeader bool
+	Format         string
+	Writer         io.Writer
+	PID            int
+	Backend        string
+	Interval       time.Duration
+	SampleInterval time.Duration
+	NoHeader       bool
 }
 
 type OutputError struct {
@@ -45,7 +46,7 @@ func NewRenderer(opts RendererOptions) (Renderer, error) {
 	case "", "table":
 		return NewTableRenderer(opts.Writer, opts.NoHeader), nil
 	case "json":
-		return NewJSONRenderer(opts.Writer, opts.PID, opts.Backend, opts.Interval), nil
+		return NewJSONRenderer(opts.Writer, opts.PID, opts.Backend, opts.Interval, opts.SampleInterval), nil
 	case "csv":
 		return nil, OutputError{Format: "csv", Err: ErrOutputNotImplemented}
 	default:
