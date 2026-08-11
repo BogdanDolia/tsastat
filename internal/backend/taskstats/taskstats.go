@@ -4,10 +4,11 @@ import "github.com/BogdanDolia/tsastat/internal/model"
 
 func Capabilities() model.BackendCapabilities {
 	return model.BackendCapabilities{
-		SupportsThreadStates:    false,
-		SupportsDelayCounters:   true,
-		SupportsSchedulerEvents: false,
-		RequiresRoot:            true,
+		SupportsThreadStates:      false,
+		SupportsDelayCounters:     true,
+		SupportsSchedulerCounters: false,
+		SupportsSchedulerEvents:   false,
+		RequiresRoot:              true,
 		RequiresKernelConfig: []string{
 			"CONFIG_TASKSTATS",
 			"CONFIG_TASK_DELAY_ACCT",

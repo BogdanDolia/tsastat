@@ -13,10 +13,10 @@ I/O, stopped, or becoming zombies during each reporting interval.
 ```text
 tsastat: pid=4242 backend=proc interval=1s sample=10ms
 
-TIME      PID   TID   COMM          RUN_ms  SLEEP_ms  D_ms  STOP_ms  Z_ms  RUN_%  SLEEP_%  D_%
-12:10:01  4242  4242  app           18      982       0     0        0     1.8    98.2     0.0
-12:10:01  4242  4243  worker-1      240     760       0     0        0     24.0   76.0     0.0
-12:10:01  4242  4244  io-worker     10      900       90    0        0     1.0    90.0     9.0
+TIME      PID   TID   START_TICKS  COMM       RUN_ms  CPU_ms  RQ_ms  SLICES  SS_OBS_ms  SLEEP_ms  D_ms  STOP_ms  Z_ms  UNK_ms  OBS_ms  GAP_ms  UNCERT_ms  RUN_%  SLEEP_%  D_%
+12:10:01  4242  4242  987650       app        18      16      2      5       1000       982       0     0        0     0       1000    11      5          1.8    98.2     0.0
+12:10:01  4242  4243  987655       worker-1   240     230     10     30      1000       760       0     0        0     0       1000    12      10         24.0   76.0     0.0
+12:10:01  4242  4244  987659       io-worker  10      8       2      3       1000       900       90    0        0     0       1000    11      10         1.0    90.0     9.0
 ```
 
 > [!IMPORTANT]
@@ -122,8 +122,19 @@ tsastat -p 1234 --sample 10ms --interval 1s --count 10 \
 Each line represents one reporting interval:
 
 ```json
-{"timestamp":"2026-05-08T12:01:01Z","pid":1234,"backend":"proc","interval_ms":1000,"sample_interval_ms":10,"threads":[{"tid":1235,"comm":"worker-1","durations_ms":{"running":120,"sleeping":870,"uninterruptible":10,"stopped":0,"tracing_stop":0,"zombie":0},"percent":{"running":12,"sleeping":87,"uninterruptible":1}}]}
+{"timestamp":"2026-05-08T12:01:01Z","interval_start":"2026-05-08T12:01:00Z","interval_end":"2026-05-08T12:01:01Z","pid":1234,"backend":"proc","interval_ms":1000,"sample_interval_ms":10,"quality":{"sampling_method":"procfs_midpoint","snapshot_count":101,"max_scan_duration_ms":1,"max_sample_gap_ms":12,"missed_transitions_possible":true,"schedstat_available":true,"schedstat_thread_count":1,"schedstat_counter_resets":0},"threads":[{"tid":1235,"start_time_ticks":987654,"comm":"worker-1","durations_ms":{"running":120,"sleeping":870,"uninterruptible":10,"stopped":0,"tracing_stop":0,"zombie":0,"dead":0,"idle":0,"unknown":0},"percent":{"running":12,"sleeping":87,"uninterruptible":1,"unknown":0},"quality":{"tracked_ms":1000,"samples":100,"max_sample_gap_ms":12,"detected_transitions":2,"detected_transition_uncertainty_ms":10},"scheduler":{"available":true,"source":"proc_schedstat","counter_deltas_exact_between_reads":true,"window_allocation":"proportional_by_wall_time","on_cpu_ms":115,"runqueue_wait_ms":5,"timeslices":16,"observed_ms":1000,"on_cpu_percent":11.5,"runqueue_wait_percent":0.5,"sample_pairs":100,"max_sample_gap_ms":12,"counter_resets":0}}]}
 ```
+
+`CPU_ms`, `RQ_ms`, and `SLICES` come from differences of the cumulative
+`/proc/<pid>/task/<tid>/schedstat` counters. `SS_OBS_ms` is the wall-clock
+coverage of valid counter pairs. These fields distinguish actual on-CPU time
+from time spent runnable but waiting for a CPU.
+
+`GAP_ms` is the largest actual gap between observations affecting the row.
+`UNCERT_ms` is the accumulated per-window timing ambiguity for state changes
+detected at adjacent samples. For a transition whose complete observation gap
+falls inside one window, this is half of that gap. `UNK_ms` is time that could
+not be attributed to a known state, for example around a disappearing thread.
 
 ## Linux thread states
 
@@ -143,16 +154,40 @@ thread was actively executing for the entire attributed duration.
 
 ## Accuracy and limitations
 
-The procfs backend reads `/proc/<pid>/task/<tid>/stat` repeatedly. The time
-between two samples is attributed to the state seen in the earlier sample.
-Multiple samples are accumulated into each report.
+The procfs backend reads `/proc/<pid>/task/<tid>/stat` repeatedly. Each read is
+timestamped near its midpoint and the complete scan records its start and end.
+When adjacent samples have different states, the transition is estimated at
+the midpoint between them. Multiple samples are accumulated into fixed report
+windows; intervals crossing a boundary are split at the exact boundary.
+
+Threads are identified by `(tid, starttime)`, where `starttime` is field 22 of
+the proc stat record. Reuse of a TID therefore does not merge two different
+thread lifetimes.
+
+When `/proc/<pid>/task/<tid>/schedstat` is available, each state read is paired
+with the kernel's cumulative on-CPU, runqueue-wait, and timeslice counters.
+Successive counter differences are preserved exactly. If a counter pair spans
+a fixed report boundary, its delta is divided proportionally by the wall time
+on each side; for a fully tracked pair, totals across the affected windows
+remain equal to the kernel delta. `tsastat doctor` reports schedstat
+availability and the runtime `kernel.sched_schedstats` value when exposed by
+the kernel. On kernels where scheduler statistics are runtime-disabled, the
+file may still exist while its counters remain zero; `doctor` warns when the
+runtime switch is visibly disabled.
 
 Consequences of this approach:
 
 - transitions shorter than the sampling interval can be missed;
 - accuracy and overhead depend on `--sample`;
-- report windows can be slightly longer than requested because of scheduling;
-- disappearing threads are finalized at the next process snapshot;
+- output reports the actual maximum sample gap and proc scan duration;
+- schedstat counter deltas are exact between reads, but their placement inside
+  a report window is limited by the sample gap;
+- detected transition uncertainty is an estimate, not an upper error bound,
+  because multiple transitions can occur between equal endpoint states;
+- report windows have fixed boundaries but may be emitted slightly late while
+  waiting for a complete observation past the boundary;
+- disappearing threads are estimated at the gap midpoint and the remainder is
+  reported as `unknown`;
 - new threads are tracked from their first observation;
 - percentages describe sampled state, not exact on-CPU time.
 
@@ -163,7 +198,7 @@ required.
 
 | Backend | Status | Semantics |
 | --- | --- | --- |
-| `proc` | Available | Sampled observed thread state |
+| `proc` | Available | Sampled state plus schedstat scheduler-counter deltas when available |
 | `taskstats` | Planned | Linux Delay Accounting counters |
 | `ebpf` | Planned | Event-driven scheduler timeline |
 
@@ -186,7 +221,7 @@ The backend interface is deliberately small:
 type Backend interface {
     Name() string
     Capabilities() model.BackendCapabilities
-    Snapshot(ctx context.Context, pid int) ([]model.ThreadSample, error)
+    Snapshot(ctx context.Context, pid int) (model.ThreadSnapshot, error)
     Close() error
 }
 ```
@@ -222,7 +257,7 @@ build provenance attestations. Release binaries report their version through
 - multi-process and process-tree monitoring;
 - experimental taskstats support;
 - eBPF scheduler-event tracing;
-- runnable wait and on-CPU time;
+- event-timed runnable wait and on-CPU time through eBPF;
 - context-switch and wakeup counters;
 - optional TUI frontend.
 

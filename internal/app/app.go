@@ -73,8 +73,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 
 	c := collector.New(b, cfg.PID, cfg.Interval, cfg.SampleInterval)
-	err = c.Run(ctx, cfg.Count, func(stats []model.ThreadIntervalStats) error {
-		filtered, err := output.FilterAndSort(stats, output.FilterSortOptions{
+	err = c.Run(ctx, cfg.Count, func(report model.IntervalReport) error {
+		filtered, err := output.FilterAndSort(report.Threads, output.FilterSortOptions{
 			TID:      cfg.TID,
 			Comm:     cfg.Comm,
 			ShowIdle: cfg.ShowIdle,
@@ -83,7 +83,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return err
 		}
-		return renderer.Render(filtered)
+		report.Threads = filtered
+		return renderer.Render(report)
 	})
 	if err != nil {
 		var processGone model.ProcessNotFoundError

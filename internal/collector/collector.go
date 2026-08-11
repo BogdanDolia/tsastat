@@ -23,21 +23,16 @@ func New(b backend.Backend, pid int, interval, sampleInterval time.Duration) *Co
 		pid:            pid,
 		interval:       interval,
 		sampleInterval: sampleInterval,
-		acc:            NewAccumulator(),
+		acc:            NewAccumulator(interval),
 	}
 }
 
-func (c *Collector) Run(ctx context.Context, count int, emit func([]model.ThreadIntervalStats) error) error {
-	samples, err := c.backend.Snapshot(ctx, c.pid)
+func (c *Collector) Run(ctx context.Context, count int, emit func(model.IntervalReport) error) error {
+	snapshot, err := c.backend.Snapshot(ctx, c.pid)
 	if err != nil {
 		return err
 	}
-	c.acc.Observe(samples)
-	windowStart, ok := snapshotTime(samples)
-	if !ok {
-		windowStart = time.Now()
-	}
-	nextReport := windowStart.Add(c.interval)
+	c.acc.Observe(snapshot)
 	ticker := time.NewTicker(c.sampleInterval)
 	defer ticker.Stop()
 
@@ -49,7 +44,7 @@ func (c *Collector) Run(ctx context.Context, count int, emit func([]model.Thread
 		case <-ticker.C:
 		}
 
-		samples, err := c.backend.Snapshot(ctx, c.pid)
+		snapshot, err := c.backend.Snapshot(ctx, c.pid)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return nil
@@ -57,24 +52,15 @@ func (c *Collector) Run(ctx context.Context, count int, emit func([]model.Thread
 			return err
 		}
 
-		c.acc.Observe(samples)
-		now, ok := snapshotTime(samples)
-		if !ok {
-			now = time.Now()
+		for _, report := range c.acc.Observe(snapshot) {
+			if err := emit(report); err != nil {
+				return err
+			}
+			emitted++
+			if count > 0 && emitted >= count {
+				return nil
+			}
 		}
-		if now.Before(nextReport) {
-			continue
-		}
-		nextReport = now.Add(c.interval)
-
-		stats := c.acc.Flush()
-		if len(stats) == 0 {
-			continue
-		}
-		if err := emit(stats); err != nil {
-			return err
-		}
-		emitted++
 	}
 
 	return nil

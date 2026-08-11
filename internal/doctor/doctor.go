@@ -10,6 +10,7 @@ import (
 	"github.com/BogdanDolia/tsastat/internal/backend/ebpf"
 	"github.com/BogdanDolia/tsastat/internal/backend/proc"
 	"github.com/BogdanDolia/tsastat/internal/backend/taskstats"
+	"github.com/BogdanDolia/tsastat/internal/procfs"
 )
 
 func Run(w io.Writer) error {
@@ -40,8 +41,29 @@ func writeProc(w io.Writer) {
 
 	fmt.Fprintln(w, "  status: OK")
 	fmt.Fprintln(w, "  reason: /proc is available and readable")
+	writeSchedstatStatus(w)
 	for _, warning := range proc.Capabilities().Warnings {
 		fmt.Fprintf(w, "  warning: %s\n", warning)
+	}
+}
+
+func writeSchedstatStatus(w io.Writer) {
+	data, err := os.ReadFile("/proc/self/schedstat")
+	if err != nil {
+		fmt.Fprintf(w, "  schedstat: unavailable (%v)\n", err)
+		return
+	}
+	if _, err := procfs.ParseSchedstatLine(string(data)); err != nil {
+		fmt.Fprintf(w, "  schedstat: invalid (%v)\n", err)
+		return
+	}
+	fmt.Fprintln(w, "  schedstat: available")
+	if data, err := os.ReadFile("/proc/sys/kernel/sched_schedstats"); err == nil {
+		value := strings.TrimSpace(string(data))
+		fmt.Fprintf(w, "  kernel.sched_schedstats: %s\n", value)
+		if value == "0" {
+			fmt.Fprintln(w, "  warning: scheduler statistics are runtime-disabled; verify schedstat counters advance on this kernel")
+		}
 	}
 }
 

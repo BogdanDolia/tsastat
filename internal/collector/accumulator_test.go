@@ -7,140 +7,376 @@ import (
 	"github.com/BogdanDolia/tsastat/internal/model"
 )
 
-func TestAccumulatorAttributesPreviousState(t *testing.T) {
-	acc := NewAccumulator()
+func TestAccumulatorKeepsExactWindowsWithoutDrift(t *testing.T) {
 	base := time.Unix(0, 0)
+	acc := NewAccumulator(time.Second)
 
-	acc.Observe([]model.ThreadSample{sample(1, "worker", model.StateRunning, base)})
-	if got := acc.Flush(); len(got) != 0 {
-		t.Fatalf("first Flush returned %d stats, want 0", len(got))
+	acc.Observe(snapshot(sample(1, 1, "worker", model.StateRunning, base), base))
+	reports := acc.Observe(snapshot(sample(1, 1, "worker", model.StateRunning, base.Add(1100*time.Millisecond)), base.Add(1100*time.Millisecond)))
+	if len(reports) != 1 {
+		t.Fatalf("first completed reports = %d, want 1", len(reports))
 	}
-
-	acc.Observe([]model.ThreadSample{sample(1, "worker", model.StateSleeping, base.Add(time.Second))})
-	got := acc.Flush()
-	if len(got) != 1 {
-		t.Fatalf("second Observe returned %d stats, want 1", len(got))
-	}
-	if got[0].Duration(model.StateRunning) != time.Second {
-		t.Fatalf("running duration = %s, want 1s", got[0].Duration(model.StateRunning))
+	assertWindow(t, reports[0], base, base.Add(time.Second))
+	if got := reports[0].Threads[0].Duration(model.StateRunning); got != time.Second {
+		t.Fatalf("first running duration = %s, want 1s", got)
 	}
 
-	acc.Observe([]model.ThreadSample{sample(1, "worker", model.StateSleeping, base.Add(2*time.Second))})
-	got = acc.Flush()
-	if len(got) != 1 {
-		t.Fatalf("third Observe returned %d stats, want 1", len(got))
+	reports = acc.Observe(snapshot(sample(1, 1, "worker", model.StateRunning, base.Add(2200*time.Millisecond)), base.Add(2200*time.Millisecond)))
+	if len(reports) != 1 {
+		t.Fatalf("second completed reports = %d, want 1", len(reports))
 	}
-	if got[0].Duration(model.StateSleeping) != time.Second {
-		t.Fatalf("sleeping duration = %s, want 1s", got[0].Duration(model.StateSleeping))
+	assertWindow(t, reports[0], base.Add(time.Second), base.Add(2*time.Second))
+	if got := reports[0].Threads[0].Duration(model.StateRunning); got != time.Second {
+		t.Fatalf("second running duration = %s, want 1s", got)
 	}
 }
 
-func TestAccumulatorNewThreadAppearing(t *testing.T) {
-	acc := NewAccumulator()
+func TestAccumulatorUsesMidpointAndReportsUncertainty(t *testing.T) {
 	base := time.Unix(0, 0)
+	acc := NewAccumulator(time.Second)
 
-	acc.Observe([]model.ThreadSample{sample(1, "one", model.StateRunning, base)})
-	acc.Observe([]model.ThreadSample{
-		sample(1, "one", model.StateSleeping, base.Add(time.Second)),
-		sample(2, "two", model.StateRunning, base.Add(time.Second)),
-	})
-	got := acc.Flush()
+	acc.Observe(snapshot(sample(1, 1, "worker", model.StateRunning, base), base))
+	acc.Observe(snapshot(sample(1, 1, "worker", model.StateSleeping, base.Add(100*time.Millisecond)), base.Add(100*time.Millisecond)))
+	reports := acc.Observe(snapshot(sample(1, 1, "worker", model.StateSleeping, base.Add(time.Second)), base.Add(time.Second)))
 
-	if len(got) != 1 {
-		t.Fatalf("Observe returned %d stats, want only existing thread", len(got))
+	stat := onlyThread(t, reports)
+	if got := stat.Duration(model.StateRunning); got != 50*time.Millisecond {
+		t.Fatalf("running duration = %s, want 50ms", got)
 	}
-	if got[0].TID != 1 {
-		t.Fatalf("stat TID = %d, want 1", got[0].TID)
+	if got := stat.Duration(model.StateSleeping); got != 950*time.Millisecond {
+		t.Fatalf("sleeping duration = %s, want 950ms", got)
 	}
-
-	acc.Observe([]model.ThreadSample{
-		sample(1, "one", model.StateSleeping, base.Add(2*time.Second)),
-		sample(2, "two", model.StateSleeping, base.Add(2*time.Second)),
-	})
-	got = acc.Flush()
-	if len(got) != 2 {
-		t.Fatalf("Observe returned %d stats, want 2", len(got))
+	if stat.DetectedTransitions != 1 {
+		t.Fatalf("detected transitions = %d, want 1", stat.DetectedTransitions)
+	}
+	if stat.DetectedTransitionUncertainty != 50*time.Millisecond {
+		t.Fatalf("transition uncertainty = %s, want 50ms", stat.DetectedTransitionUncertainty)
+	}
+	if stat.MaxSampleGap != 900*time.Millisecond {
+		t.Fatalf("max sample gap = %s, want 900ms", stat.MaxSampleGap)
+	}
+	if !reports[0].Quality.MissedTransitionsPossible {
+		t.Fatal("MissedTransitionsPossible = false, want true")
 	}
 }
 
-func TestAccumulatorThreadDisappearing(t *testing.T) {
-	acc := NewAccumulator()
+func TestAccumulatorCarriesTransitionUncertaintyAcrossWindowBoundary(t *testing.T) {
 	base := time.Unix(0, 0)
+	acc := NewAccumulator(time.Second)
 
-	acc.Observe([]model.ThreadSample{
-		sample(1, "one", model.StateRunning, base),
-		sample(2, "two", model.StateSleeping, base),
-	})
-	acc.Observe([]model.ThreadSample{
-		sample(1, "one", model.StateSleeping, base.Add(time.Second)),
-	})
-	got := acc.Flush()
+	acc.Observe(snapshot(sample(1, 1, "worker", model.StateRunning, base), base))
+	acc.Observe(snapshot(sample(1, 1, "worker", model.StateRunning, base.Add(900*time.Millisecond)), base.Add(900*time.Millisecond)))
+	first := acc.Observe(snapshot(sample(1, 1, "worker", model.StateSleeping, base.Add(1100*time.Millisecond)), base.Add(1100*time.Millisecond)))
+	firstStat := onlyThread(t, first)
+	if firstStat.DetectedTransitionUncertainty != 100*time.Millisecond {
+		t.Fatalf("first window uncertainty = %s, want 100ms", firstStat.DetectedTransitionUncertainty)
+	}
 
-	if len(got) != 2 {
-		t.Fatalf("Observe returned %d stats, want 2 including disappearing thread", len(got))
-	}
-	if got[1].TID != 2 {
-		t.Fatalf("second stat TID = %d, want 2", got[1].TID)
-	}
-	if got[1].Duration(model.StateSleeping) != time.Second {
-		t.Fatalf("disappearing thread sleeping duration = %s, want 1s", got[1].Duration(model.StateSleeping))
+	second := acc.Observe(snapshot(sample(1, 1, "worker", model.StateSleeping, base.Add(2*time.Second)), base.Add(2*time.Second)))
+	secondStat := onlyThread(t, second)
+	if secondStat.DetectedTransitionUncertainty != 100*time.Millisecond {
+		t.Fatalf("second window uncertainty = %s, want 100ms", secondStat.DetectedTransitionUncertainty)
 	}
 }
 
-func TestAccumulatorMultipleTIDs(t *testing.T) {
-	acc := NewAccumulator()
+func TestAccumulatorUsesExactSchedstatCounterDeltas(t *testing.T) {
 	base := time.Unix(0, 0)
+	acc := NewAccumulator(time.Second)
 
-	acc.Observe([]model.ThreadSample{
-		sample(2, "two", model.StateSleeping, base),
-		sample(1, "one", model.StateRunning, base),
-	})
-	acc.Observe([]model.ThreadSample{
-		sample(2, "two", model.StateRunning, base.Add(time.Second)),
-		sample(1, "one", model.StateSleeping, base.Add(time.Second)),
-	})
-	got := acc.Flush()
+	acc.Observe(snapshot(schedstatSample(1, 1, "worker", model.StateRunning, base, 100*time.Millisecond, 50*time.Millisecond, 10), base))
+	reports := acc.Observe(snapshot(schedstatSample(1, 1, "worker", model.StateRunning, base.Add(time.Second), 400*time.Millisecond, 250*time.Millisecond, 15), base.Add(time.Second)))
+	stat := onlyThread(t, reports)
 
-	if len(got) != 2 {
-		t.Fatalf("Observe returned %d stats, want 2", len(got))
+	if stat.OnCPU != 300*time.Millisecond {
+		t.Fatalf("on-CPU = %s, want 300ms", stat.OnCPU)
 	}
-	if got[0].TID != 1 || got[1].TID != 2 {
-		t.Fatalf("stats TIDs = %d,%d, want sorted 1,2", got[0].TID, got[1].TID)
+	if stat.RunqueueWait != 200*time.Millisecond {
+		t.Fatalf("runqueue wait = %s, want 200ms", stat.RunqueueWait)
+	}
+	if stat.Timeslices != 5 {
+		t.Fatalf("timeslices = %d, want 5", stat.Timeslices)
+	}
+	if stat.SchedstatObserved != time.Second || stat.SchedstatSamplePairs != 1 {
+		t.Fatalf("schedstat coverage/pairs = %s/%d, want 1s/1", stat.SchedstatObserved, stat.SchedstatSamplePairs)
+	}
+	if !reports[0].Quality.SchedstatAvailable || reports[0].Quality.SchedstatThreadCount != 1 {
+		t.Fatalf("schedstat interval quality = %#v", reports[0].Quality)
 	}
 }
 
-func TestAccumulatorAggregatesMultipleStatesWithinWindow(t *testing.T) {
-	acc := NewAccumulator()
+func TestAccumulatorConservesSchedstatDeltaAcrossWindowBoundary(t *testing.T) {
 	base := time.Unix(0, 0)
+	acc := NewAccumulator(time.Second)
 
-	acc.Observe([]model.ThreadSample{sample(1, "worker", model.StateRunning, base)})
-	acc.Observe([]model.ThreadSample{sample(1, "worker", model.StateSleeping, base.Add(300*time.Millisecond))})
-	acc.Observe([]model.ThreadSample{sample(1, "worker", model.StateSleeping, base.Add(time.Second))})
+	acc.Observe(snapshot(schedstatSample(1, 1, "worker", model.StateRunning, base, 0, 0, 0), base))
+	acc.Observe(snapshot(schedstatSample(1, 1, "worker", model.StateRunning, base.Add(900*time.Millisecond), 0, 0, 0), base.Add(900*time.Millisecond)))
+	first := acc.Observe(snapshot(schedstatSample(1, 1, "worker", model.StateRunning, base.Add(1100*time.Millisecond), 200*time.Millisecond, 100*time.Millisecond, 2), base.Add(1100*time.Millisecond)))
+	firstStat := onlyThread(t, first)
+	if firstStat.OnCPU != 100*time.Millisecond || firstStat.RunqueueWait != 50*time.Millisecond || firstStat.Timeslices != 1 {
+		t.Fatalf("first schedstat allocation = CPU %s RQ %s slices %d",
+			firstStat.OnCPU, firstStat.RunqueueWait, firstStat.Timeslices)
+	}
 
-	got := acc.Flush()
-	if len(got) != 1 {
-		t.Fatalf("Flush returned %d stats, want 1", len(got))
+	second := acc.Observe(snapshot(schedstatSample(1, 1, "worker", model.StateRunning, base.Add(2*time.Second), 200*time.Millisecond, 100*time.Millisecond, 2), base.Add(2*time.Second)))
+	secondStat := onlyThread(t, second)
+	if secondStat.OnCPU != 100*time.Millisecond || secondStat.RunqueueWait != 50*time.Millisecond || secondStat.Timeslices != 1 {
+		t.Fatalf("second schedstat allocation = CPU %s RQ %s slices %d",
+			secondStat.OnCPU, secondStat.RunqueueWait, secondStat.Timeslices)
 	}
-	if got[0].Duration(model.StateRunning) != 300*time.Millisecond {
-		t.Fatalf("running duration = %s, want 300ms", got[0].Duration(model.StateRunning))
-	}
-	if got[0].Duration(model.StateSleeping) != 700*time.Millisecond {
-		t.Fatalf("sleeping duration = %s, want 700ms", got[0].Duration(model.StateSleeping))
-	}
-	if got[0].Percent(model.StateRunning) != 30 {
-		t.Fatalf("running percent = %.1f, want 30.0", got[0].Percent(model.StateRunning))
-	}
-	if got[0].Percent(model.StateSleeping) != 70 {
-		t.Fatalf("sleeping percent = %.1f, want 70.0", got[0].Percent(model.StateSleeping))
+	if firstStat.OnCPU+secondStat.OnCPU != 200*time.Millisecond || firstStat.RunqueueWait+secondStat.RunqueueWait != 100*time.Millisecond {
+		t.Fatal("schedstat delta was not conserved across windows")
 	}
 }
 
-func sample(tid int, comm string, state model.ThreadState, ts time.Time) model.ThreadSample {
+func TestAccumulatorRejectsSchedstatCounterReset(t *testing.T) {
+	base := time.Unix(0, 0)
+	acc := NewAccumulator(time.Second)
+
+	acc.Observe(snapshot(schedstatSample(1, 1, "worker", model.StateRunning, base, 100*time.Millisecond, 50*time.Millisecond, 10), base))
+	reports := acc.Observe(snapshot(schedstatSample(1, 1, "worker", model.StateRunning, base.Add(time.Second), 50*time.Millisecond, 25*time.Millisecond, 5), base.Add(time.Second)))
+	stat := onlyThread(t, reports)
+	if stat.SchedstatCounterResets != 1 || stat.SchedstatAvailable() {
+		t.Fatalf("schedstat reset state = resets %d available %t", stat.SchedstatCounterResets, stat.SchedstatAvailable())
+	}
+	if reports[0].Quality.SchedstatCounterResets != 1 {
+		t.Fatalf("interval resets = %d, want 1", reports[0].Quality.SchedstatCounterResets)
+	}
+}
+
+func TestMultiplyDivideHandlesFullUint64Range(t *testing.T) {
+	const maxUint64 = ^uint64(0)
+	if got, want := multiplyDivide(maxUint64, 1, 2), maxUint64/2; got != want {
+		t.Fatalf("multiplyDivide(max, 1, 2) = %d, want %d", got, want)
+	}
+}
+
+func TestAccumulatorDoesNotMergeReusedTID(t *testing.T) {
+	base := time.Unix(0, 0)
+	acc := NewAccumulator(time.Second)
+
+	acc.Observe(snapshot(sample(7, 100, "old", model.StateRunning, base), base))
+	replacementAt := base.Add(time.Second)
+	first := acc.Observe(model.ThreadSnapshot{
+		Samples:    []model.ThreadSample{sample(7, 200, "new", model.StateSleeping, replacementAt)},
+		StartedAt:  replacementAt,
+		FinishedAt: replacementAt,
+	})
+	old := onlyThread(t, first)
+	if old.StartTimeTicks != 100 {
+		t.Fatalf("old start time = %d, want 100", old.StartTimeTicks)
+	}
+	if old.Duration(model.StateRunning) != 500*time.Millisecond || old.UnknownDuration() != 500*time.Millisecond {
+		t.Fatalf("old durations = running %s unknown %s, want 500ms each",
+			old.Duration(model.StateRunning), old.UnknownDuration())
+	}
+
+	second := acc.Observe(snapshot(sample(7, 200, "new", model.StateSleeping, base.Add(2*time.Second)), base.Add(2*time.Second)))
+	newThread := onlyThread(t, second)
+	if newThread.StartTimeTicks != 200 {
+		t.Fatalf("new start time = %d, want 200", newThread.StartTimeTicks)
+	}
+	if newThread.Duration(model.StateSleeping) != time.Second {
+		t.Fatalf("new sleeping duration = %s, want 1s", newThread.Duration(model.StateSleeping))
+	}
+}
+
+func TestAccumulatorKeepsReusedTIDSeparateInsideOneWindow(t *testing.T) {
+	base := time.Unix(0, 0)
+	acc := NewAccumulator(2 * time.Second)
+
+	acc.Observe(snapshot(sample(7, 100, "old", model.StateRunning, base), base))
+	replacementAt := base.Add(time.Second)
+	acc.Observe(model.ThreadSnapshot{
+		Samples:    []model.ThreadSample{sample(7, 200, "new", model.StateSleeping, replacementAt)},
+		StartedAt:  replacementAt,
+		FinishedAt: replacementAt,
+	})
+	reports := acc.Observe(snapshot(sample(7, 200, "new", model.StateSleeping, base.Add(2*time.Second)), base.Add(2*time.Second)))
+
+	if len(reports) != 1 {
+		t.Fatalf("reports = %d, want 1", len(reports))
+	}
+	if len(reports[0].Threads) != 2 {
+		t.Fatalf("threads = %d, want 2", len(reports[0].Threads))
+	}
+	if reports[0].Threads[0].StartTimeTicks != 100 || reports[0].Threads[1].StartTimeTicks != 200 {
+		t.Fatalf("start times = %d,%d, want 100,200",
+			reports[0].Threads[0].StartTimeTicks, reports[0].Threads[1].StartTimeTicks)
+	}
+}
+
+func TestAccumulatorWaitsForEveryTrackedThreadToCrossBoundary(t *testing.T) {
+	base := time.Unix(0, 0)
+	acc := NewAccumulator(time.Second)
+	acc.Observe(model.ThreadSnapshot{
+		Samples: []model.ThreadSample{
+			sample(1, 1, "one", model.StateRunning, base),
+			sample(2, 2, "two", model.StateSleeping, base),
+		},
+		StartedAt:  base.Add(-time.Millisecond),
+		FinishedAt: base,
+	})
+
+	reports := acc.Observe(model.ThreadSnapshot{
+		Samples: []model.ThreadSample{
+			sample(1, 1, "one", model.StateRunning, base.Add(1100*time.Millisecond)),
+			sample(2, 2, "two", model.StateSleeping, base.Add(900*time.Millisecond)),
+		},
+		StartedAt:  base.Add(890 * time.Millisecond),
+		FinishedAt: base.Add(1110 * time.Millisecond),
+	})
+	if len(reports) != 0 {
+		t.Fatalf("reports before all threads cross boundary = %d, want 0", len(reports))
+	}
+
+	reports = acc.Observe(model.ThreadSnapshot{
+		Samples: []model.ThreadSample{
+			sample(1, 1, "one", model.StateRunning, base.Add(1200*time.Millisecond)),
+			sample(2, 2, "two", model.StateSleeping, base.Add(1050*time.Millisecond)),
+		},
+		StartedAt:  base.Add(1040 * time.Millisecond),
+		FinishedAt: base.Add(1210 * time.Millisecond),
+	})
+	if len(reports) != 1 {
+		t.Fatalf("reports after all threads cross boundary = %d, want 1", len(reports))
+	}
+	if len(reports[0].Threads) != 2 {
+		t.Fatalf("threads = %d, want 2", len(reports[0].Threads))
+	}
+}
+
+func TestAccumulatorWaitsForNewThreadSecondObservation(t *testing.T) {
+	base := time.Unix(0, 0)
+	acc := NewAccumulator(time.Second)
+	acc.Observe(snapshot(sample(1, 1, "leader", model.StateRunning, base), base))
+
+	reports := acc.Observe(model.ThreadSnapshot{
+		Samples: []model.ThreadSample{
+			sample(1, 1, "leader", model.StateRunning, base.Add(1100*time.Millisecond)),
+			sample(2, 2, "new", model.StateSleeping, base.Add(900*time.Millisecond)),
+		},
+		StartedAt:  base.Add(890 * time.Millisecond),
+		FinishedAt: base.Add(1110 * time.Millisecond),
+	})
+	if len(reports) != 0 {
+		t.Fatalf("reports before new thread has a closing sample = %d, want 0", len(reports))
+	}
+
+	reports = acc.Observe(model.ThreadSnapshot{
+		Samples: []model.ThreadSample{
+			sample(1, 1, "leader", model.StateRunning, base.Add(1200*time.Millisecond)),
+			sample(2, 2, "new", model.StateSleeping, base.Add(1050*time.Millisecond)),
+		},
+		StartedAt:  base.Add(1040 * time.Millisecond),
+		FinishedAt: base.Add(1210 * time.Millisecond),
+	})
+	if len(reports) != 1 {
+		t.Fatalf("reports after new thread crosses boundary = %d, want 1", len(reports))
+	}
+	if len(reports[0].Threads) != 2 {
+		t.Fatalf("threads = %d, want 2", len(reports[0].Threads))
+	}
+	newThread := reports[0].Threads[1]
+	if newThread.StartTimeTicks != 2 || newThread.Duration(model.StateSleeping) != 100*time.Millisecond {
+		t.Fatalf("new thread = %#v, want 100ms sleeping tracked from first observation", newThread)
+	}
+}
+
+func TestAccumulatorMarksDisappearanceAsUnknown(t *testing.T) {
+	base := time.Unix(0, 0)
+	acc := NewAccumulator(time.Second)
+
+	acc.Observe(snapshot(sample(1, 1, "worker", model.StateSleeping, base), base))
+	reports := acc.Observe(model.ThreadSnapshot{
+		StartedAt:  base.Add(time.Second),
+		FinishedAt: base.Add(time.Second),
+	})
+	stat := onlyThread(t, reports)
+	if stat.Duration(model.StateSleeping) != 500*time.Millisecond {
+		t.Fatalf("sleeping duration = %s, want 500ms", stat.Duration(model.StateSleeping))
+	}
+	if stat.UnknownDuration() != 500*time.Millisecond {
+		t.Fatalf("unknown duration = %s, want 500ms", stat.UnknownDuration())
+	}
+}
+
+func TestAccumulatorTracksScanQuality(t *testing.T) {
+	base := time.Unix(0, 0)
+	acc := NewAccumulator(time.Second)
+	first := model.ThreadSnapshot{
+		Samples:    []model.ThreadSample{sample(1, 1, "worker", model.StateRunning, base)},
+		StartedAt:  base.Add(-2 * time.Millisecond),
+		FinishedAt: base,
+	}
+	second := model.ThreadSnapshot{
+		Samples:    []model.ThreadSample{sample(1, 1, "worker", model.StateRunning, base.Add(time.Second))},
+		StartedAt:  base.Add(time.Second - 3*time.Millisecond),
+		FinishedAt: base.Add(time.Second),
+	}
+
+	acc.Observe(first)
+	reports := acc.Observe(second)
+	if reports[0].Quality.SnapshotCount != 2 {
+		t.Fatalf("snapshot count = %d, want 2", reports[0].Quality.SnapshotCount)
+	}
+	if reports[0].Quality.MaxScanDuration != 3*time.Millisecond {
+		t.Fatalf("max scan duration = %s, want 3ms", reports[0].Quality.MaxScanDuration)
+	}
+}
+
+func onlyThread(t *testing.T, reports []model.IntervalReport) model.ThreadIntervalStats {
+	t.Helper()
+	if len(reports) != 1 {
+		t.Fatalf("reports = %d, want 1", len(reports))
+	}
+	if len(reports[0].Threads) != 1 {
+		t.Fatalf("threads = %d, want 1", len(reports[0].Threads))
+	}
+	return reports[0].Threads[0]
+}
+
+func assertWindow(t *testing.T, report model.IntervalReport, start, end time.Time) {
+	t.Helper()
+	if !report.IntervalStart.Equal(start) || !report.IntervalEnd.Equal(end) {
+		t.Fatalf("window = [%s,%s), want [%s,%s)", report.IntervalStart, report.IntervalEnd, start, end)
+	}
+}
+
+func snapshot(sample model.ThreadSample, at time.Time) model.ThreadSnapshot {
+	return model.ThreadSnapshot{
+		Samples:    []model.ThreadSample{sample},
+		StartedAt:  at.Add(-time.Nanosecond),
+		FinishedAt: at,
+	}
+}
+
+func sample(tid int, startTime uint64, comm string, state model.ThreadState, ts time.Time) model.ThreadSample {
 	return model.ThreadSample{
-		PID:       99,
-		TID:       tid,
-		Comm:      comm,
-		State:     state,
-		Timestamp: ts,
+		PID:            99,
+		TID:            tid,
+		StartTimeTicks: startTime,
+		Comm:           comm,
+		State:          state,
+		Timestamp:      ts,
 	}
+}
+
+func schedstatSample(
+	tid int,
+	startTime uint64,
+	comm string,
+	state model.ThreadState,
+	ts time.Time,
+	onCPU time.Duration,
+	runqueue time.Duration,
+	timeslices uint64,
+) model.ThreadSample {
+	sample := sample(tid, startTime, comm, state, ts)
+	sample.Schedstat = model.SchedstatCounters{
+		Available:           true,
+		OnCPUNanoseconds:    uint64(onCPU.Nanoseconds()),
+		RunqueueNanoseconds: uint64(runqueue.Nanoseconds()),
+		Timeslices:          timeslices,
+	}
+	return sample
 }

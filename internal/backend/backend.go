@@ -9,6 +9,6 @@ import (
 type Backend interface {
 	Name() string
 	Capabilities() model.BackendCapabilities
-	Snapshot(ctx context.Context, pid int) ([]model.ThreadSample, error)
+	Snapshot(ctx context.Context, pid int) (model.ThreadSnapshot, error)
 	Close() error
 }
