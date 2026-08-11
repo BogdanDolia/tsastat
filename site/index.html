@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="tsastat is a lightweight Linux CLI for understanding per-thread CPU time, runqueue wait, scheduler latency, and resource delays."
+    />
+    <meta name="theme-color" content="#f4f7fb" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0d121c" media="(prefers-color-scheme: dark)" />
+    <meta property="og:title" content="tsastat — Linux thread delay analysis" />
+    <meta
+      property="og:description"
+      content="See where Linux threads lose time. Inspect CPU, runqueue, scheduler latency, and kernel delay signals."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://bogdandolia.github.io/tsastat/" />
+    <meta property="og:image" content="https://bogdandolia.github.io/tsastat/og.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <title>tsastat — Linux thread delay analysis</title>
+    <script>
+      (() => {
+        try {
+          const saved = localStorage.getItem("tsastat-theme");
+          if (saved === "light" || saved === "dark") {
+            document.documentElement.dataset.theme = saved;
+          }
+        } catch (_) {}
+      })();
+    </script>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="shell header-inner">
+        <a class="brand" href="#top" aria-label="tsastat home">
+          <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+          <span>tsastat</span>
+        </a>
+        <nav class="primary-nav" aria-label="Primary navigation">
+          <a href="#why">Why tsastat</a>
+          <a href="#backends">Backends</a>
+          <a href="#viewer">Report viewer</a>
+          <a href="#quick-start">Quick start</a>
+        </nav>
+        <div class="header-actions">
+          <a
+            class="github-link"
+            href="https://github.com/BogdanDolia/tsastat"
+            target="_blank"
+            rel="noreferrer"
+          >
+            GitHub <span aria-hidden="true">↗</span>
+          </a>
+          <button class="theme-control" id="theme-control" type="button">
+            <span class="theme-control-icon" aria-hidden="true">◐</span>
+            <span id="theme-control-label">Theme: system</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top">
+        <div class="shell hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow"><span class="status-dot"></span> Open-source Linux observability</p>
+            <h1>See where Linux threads <span>lose time.</span></h1>
+            <p class="hero-lede">
+              A focused CLI for per-thread CPU time, runqueue wait, scheduler latency,
+              and kernel-reported resource delays — with explicit quality signals.
+            </p>
+            <div class="hero-actions">
+              <a class="button button-primary" href="#quick-start">Start profiling</a>
+              <a
+                class="button button-secondary"
+                href="https://github.com/BogdanDolia/tsastat/releases/latest"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Download latest release
+              </a>
+            </div>
+            <ul class="hero-facts" aria-label="Project highlights">
+              <li>Linux 6.1+ for eBPF</li>
+              <li>amd64 &amp; arm64</li>
+              <li>JSON Lines export</li>
+            </ul>
+          </div>
+
+          <div class="terminal-wrap" aria-label="Example tsastat output">
+            <div class="terminal-glow" aria-hidden="true"></div>
+            <div class="terminal">
+              <div class="terminal-bar">
+                <span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+                <span>tsastat · pid 4242</span>
+                <span class="live-chip"><i></i> live</span>
+              </div>
+              <div class="terminal-body" tabindex="0">
+                <p><span class="prompt">$</span> sudo tsastat -p 4242 --backend auto -i 1s</p>
+                <p class="terminal-meta">backend=auto · sample=10ms · mode=hybrid</p>
+                <div class="terminal-table" role="table" aria-label="Example thread metrics">
+                  <div class="terminal-row terminal-head" role="row">
+                    <span role="columnheader">COMM</span><span role="columnheader">CPU</span><span role="columnheader">RQ</span><span role="columnheader">WAKE</span>
+                  </div>
+                  <div class="terminal-row" role="row">
+                    <span role="cell"><b class="thread-cyan"></b>worker-1</span><span role="cell">210ms</span><span role="cell">30ms</span><span role="cell">41µs</span>
+                  </div>
+                  <div class="terminal-row" role="row">
+                    <span role="cell"><b class="thread-green"></b>io-pool</span><span role="cell">38ms</span><span role="cell">6ms</span><span role="cell">18µs</span>
+                  </div>
+                  <div class="terminal-row" role="row">
+                    <span role="cell"><b class="thread-violet"></b>gc-worker</span><span role="cell">12ms</span><span role="cell">2ms</span><span role="cell">9µs</span>
+                  </div>
+                </div>
+                <div class="mini-chart" aria-hidden="true">
+                  <span style="--height: 34%"></span><span style="--height: 48%"></span><span style="--height: 42%"></span><span style="--height: 71%"></span><span style="--height: 58%"></span><span style="--height: 84%"></span><span style="--height: 66%"></span><span style="--height: 91%"></span><span style="--height: 74%"></span><span style="--height: 62%"></span><span style="--height: 78%"></span><span style="--height: 54%"></span>
+                </div>
+              </div>
+              <div class="terminal-footer">
+                <span><i class="source-ok"></i> eBPF</span>
+                <span><i class="source-ok"></i> taskstats</span>
+                <span><i class="source-ok"></i> procfs</span>
+                <span class="quality-ok">quality: complete</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="signal-strip" aria-label="Key capabilities">
+        <div class="shell signal-grid">
+          <div><strong>Exact event timing</strong><span>with the eBPF scheduler timeline</span></div>
+          <div><strong>Adaptive fallback</strong><span>when privileged sources are unavailable</span></div>
+          <div><strong>Honest quality fields</strong><span>for lost events, gaps, and resets</span></div>
+          <div><strong>Local report analysis</strong><span>your JSONL never leaves the browser</span></div>
+        </div>
+      </section>
+
+      <section class="section why-section" id="why">
+        <div class="shell">
+          <div class="section-heading">
+            <p class="eyebrow">One process. Every thread.</p>
+            <h2>Move beyond aggregate CPU percentages.</h2>
+            <p>
+              <code>top</code> tells you that a process is busy. tsastat helps explain how each
+              thread spent the observed interval and where it was forced to wait.
+            </p>
+          </div>
+          <div class="metric-grid">
+            <article class="metric-card metric-blue">
+              <span class="metric-number">01</span>
+              <h3>CPU vs runqueue</h3>
+              <p>Separate time executing on a CPU from time runnable but waiting for one.</p>
+              <div class="metric-sample" aria-label="CPU 72 percent, runqueue 18 percent">
+                <span style="--value: 72%"><i>CPU</i><b>72%</b></span>
+                <span style="--value: 18%"><i>Runqueue</i><b>18%</b></span>
+              </div>
+            </article>
+            <article class="metric-card metric-green">
+              <span class="metric-number">02</span>
+              <h3>Wakeup latency</h3>
+              <p>Measure the time from a successful wakeup to the next scheduler switch-in.</p>
+              <div class="latency-sample">
+                <span>avg <strong>41µs</strong></span><span>max <strong>115µs</strong></span>
+              </div>
+            </article>
+            <article class="metric-card metric-violet">
+              <span class="metric-number">03</span>
+              <h3>Resource delays</h3>
+              <p>Attribute stalls to CPU contention, block I/O, swap, reclaim, compaction, and IRQ.</p>
+              <div class="delay-chips" aria-label="Available delay categories">
+                <span>CPU</span><span>I/O</span><span>swap</span><span>reclaim</span><span>IRQ</span>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section backend-section" id="backends">
+        <div class="shell">
+          <div class="section-heading section-heading-split">
+            <div>
+              <p class="eyebrow">Layered evidence</p>
+              <h2>Use the strongest source your system allows.</h2>
+            </div>
+            <p>
+              The default adaptive backend combines complementary kernel signals and degrades
+              explicitly. It never hides which sources were actually active.
+            </p>
+          </div>
+          <div class="backend-grid">
+            <article class="backend-card featured">
+              <div class="backend-top"><span class="backend-icon">A</span><span class="recommended">Recommended</span></div>
+              <h3>auto / hybrid</h3>
+              <p>Combines eBPF timing, taskstats delays, and procfs identity and state data.</p>
+              <ul>
+                <li>Adaptive source selection</li>
+                <li>Identity-safe metric merging</li>
+                <li>Explicit fallback reporting</li>
+              </ul>
+            </article>
+            <article class="backend-card">
+              <div class="backend-top"><span class="backend-icon">eB</span><span>event-timed</span></div>
+              <h3>eBPF</h3>
+              <p>Captures scheduler events for exact interval placement and wakeup latency.</p>
+              <ul>
+                <li>On-CPU and runqueue time</li>
+                <li>Wakeup-to-switch latency</li>
+                <li>Lost-event quality counters</li>
+              </ul>
+            </article>
+            <article class="backend-card">
+              <div class="backend-top"><span class="backend-icon">TS</span><span>kernel counters</span></div>
+              <h3>taskstats</h3>
+              <p>Reads cumulative kernel delay accounting counters for resource attribution.</p>
+              <ul>
+                <li>CPU and block I/O delay</li>
+                <li>Memory pressure subtypes</li>
+                <li>Counter reset detection</li>
+              </ul>
+            </article>
+            <article class="backend-card">
+              <div class="backend-top"><span class="backend-icon">/p</span><span>unprivileged</span></div>
+              <h3>proc</h3>
+              <p>Samples procfs thread state and scheduler counters with minimal requirements.</p>
+              <ul>
+                <li>Works for your own processes</li>
+                <li>Thread state durations</li>
+                <li>Measured sampling gaps</li>
+              </ul>
+            </article>
+          </div>
+          <div class="accuracy-note">
+            <span class="accuracy-mark" aria-hidden="true">!</span>
+            <div>
+              <h3>Accuracy is part of the result.</h3>
+              <p>
+                Always interpret metrics with <code>active_sources</code>, lost-event counters, sample gaps,
+                and counter resets. A fallback report is useful — and intentionally less complete.
+              </p>
+            </div>
+            <a href="https://github.com/BogdanDolia/tsastat#accuracy-and-limitations" target="_blank" rel="noreferrer">Read accuracy notes <span aria-hidden="true">→</span></a>
+          </div>
+        </div>
+      </section>
+
+      <section class="section viewer-section" id="viewer">
+        <div class="shell">
+          <div class="section-heading section-heading-split viewer-heading">
+            <div>
+              <p class="eyebrow">Interactive report viewer</p>
+              <h2>Turn JSON Lines into a readable signal.</h2>
+            </div>
+            <p>
+              Open a report generated by tsastat. Parsing and analysis happen entirely on this
+              device; no report data is uploaded or stored.
+            </p>
+          </div>
+
+          <div class="viewer-shell" id="report-viewer">
+            <div class="viewer-toolbar">
+              <div class="viewer-file-actions">
+                <label class="button button-primary file-button" for="report-file">
+                  Open JSONL report
+                  <input id="report-file" type="file" accept=".jsonl,.json,application/json,application/x-ndjson" />
+                </label>
+                <button class="button button-secondary" id="load-demo" type="button">Load demo</button>
+              </div>
+              <p class="privacy-note"><span aria-hidden="true">●</span> Local-only processing</p>
+            </div>
+
+            <div class="drop-zone" id="drop-zone" tabindex="0" role="button" aria-describedby="drop-zone-help">
+              <span class="drop-icon" aria-hidden="true">↓</span>
+              <strong>Drop a `.jsonl` report here</strong>
+              <span id="drop-zone-help">or use “Open JSONL report” · up to 20 MB</span>
+            </div>
+
+            <div class="viewer-message" id="viewer-message" role="status" aria-live="polite"></div>
+
+            <div class="report-dashboard" id="report-dashboard" hidden>
+              <div class="report-summary" aria-label="Report summary">
+                <div><span>Process</span><strong id="summary-pid">—</strong></div>
+                <div><span>Backend</span><strong id="summary-backend">—</strong></div>
+                <div><span>Intervals</span><strong id="summary-intervals">—</strong></div>
+                <div><span>Threads</span><strong id="summary-threads">—</strong></div>
+              </div>
+
+              <div class="quality-panel" id="quality-panel" aria-live="polite"></div>
+
+              <div class="report-controls">
+                <label class="interval-control" for="interval-range">
+                  <span>Interval <strong id="interval-position">1 / 1</strong></span>
+                  <input id="interval-range" type="range" min="0" max="0" value="0" />
+                  <span class="interval-time" id="interval-time">—</span>
+                </label>
+                <label>
+                  <span>Find a thread</span>
+                  <input id="thread-search" type="search" placeholder="Name or TID" autocomplete="off" />
+                </label>
+                <label>
+                  <span>Sort threads</span>
+                  <select id="thread-sort">
+                    <option value="cpu">CPU time</option>
+                    <option value="runqueue">Runqueue wait</option>
+                    <option value="wakeup">Wakeup latency</option>
+                    <option value="io">Block I/O delay</option>
+                    <option value="tid">TID</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="visualization-grid">
+                <article class="viz-card">
+                  <div class="viz-heading">
+                    <div><span class="viz-kicker">Current interval</span><h3>CPU and runqueue</h3></div>
+                    <div class="legend"><span><i class="legend-cpu"></i>CPU</span><span><i class="legend-rq"></i>Runqueue</span></div>
+                  </div>
+                  <div class="thread-bars" id="thread-bars"></div>
+                </article>
+                <article class="viz-card delay-card">
+                  <div class="viz-heading">
+                    <div><span class="viz-kicker">All visible threads</span><h3>Attributed delays</h3></div>
+                    <span class="viz-unit">milliseconds</span>
+                  </div>
+                  <div class="delay-summary" id="delay-summary"></div>
+                </article>
+              </div>
+
+              <div class="table-card">
+                <div class="table-heading">
+                  <div><span class="viz-kicker">Thread detail</span><h3>Metrics for this interval</h3></div>
+                  <span id="visible-thread-count">0 threads</span>
+                </div>
+                <div class="table-scroll" tabindex="0">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th scope="col">Thread</th>
+                        <th scope="col">TID</th>
+                        <th scope="col">CPU</th>
+                        <th scope="col">Runqueue</th>
+                        <th scope="col">Wake avg</th>
+                        <th scope="col">I/O delay</th>
+                        <th scope="col">Tracked</th>
+                      </tr>
+                    </thead>
+                    <tbody id="thread-table-body"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section quick-start-section" id="quick-start">
+        <div class="shell quick-start-grid">
+          <div class="quick-start-copy">
+            <p class="eyebrow">Quick start</p>
+            <h2>From process ID to evidence in seconds.</h2>
+            <p>
+              Download a prebuilt Linux archive or build with Go 1.22+. Run <code>doctor</code> first to
+              see which data sources the current kernel and permissions support.
+            </p>
+            <ol class="steps">
+              <li><span>1</span><div><strong>Check capabilities</strong><p>Inspect eBPF, taskstats, and procfs availability.</p></div></li>
+              <li><span>2</span><div><strong>Capture intervals</strong><p>Start with the adaptive <code>auto</code> backend.</p></div></li>
+              <li><span>3</span><div><strong>Read quality first</strong><p>Confirm sources, gaps, lost events, and resets.</p></div></li>
+            </ol>
+          </div>
+          <div class="commands" aria-label="Quick start commands">
+            <div class="command-card">
+              <div><span>01</span><strong>Check your system</strong></div>
+              <pre><code>tsastat doctor</code></pre>
+              <button class="copy-command" type="button" data-copy="tsastat doctor">Copy</button>
+            </div>
+            <div class="command-card">
+              <div><span>02</span><strong>Monitor a process</strong></div>
+              <pre><code>sudo tsastat -p 1234 --backend auto \
+  --sample 10ms --interval 1s --count 10</code></pre>
+              <button class="copy-command" type="button" data-copy="sudo tsastat -p 1234 --backend auto --sample 10ms --interval 1s --count 10">Copy</button>
+            </div>
+            <div class="command-card">
+              <div><span>03</span><strong>Save a report</strong></div>
+              <pre><code>sudo tsastat -p 1234 --backend auto \
+  -i 1s -c 30 -o json &gt; report.jsonl</code></pre>
+              <button class="copy-command" type="button" data-copy="sudo tsastat -p 1234 --backend auto -i 1s -c 30 -o json > report.jsonl">Copy</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="cta-section">
+        <div class="shell cta-inner">
+          <div>
+            <p class="eyebrow">Inspect the wait, not just the work.</p>
+            <h2>Make scheduler behavior explainable.</h2>
+          </div>
+          <div class="cta-actions">
+            <a class="button button-light" href="https://github.com/BogdanDolia/tsastat" target="_blank" rel="noreferrer">View on GitHub</a>
+            <a class="button button-ghost-light" href="https://github.com/BogdanDolia/tsastat/releases/latest" target="_blank" rel="noreferrer">Get the latest release</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell footer-inner">
+        <a class="brand" href="#top">
+          <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+          <span>tsastat</span>
+        </a>
+        <p>Per-thread scheduler and delay analysis for Linux.</p>
+        <div class="footer-links">
+          <a href="https://github.com/BogdanDolia/tsastat#readme">Documentation</a>
+          <a href="https://github.com/BogdanDolia/tsastat/releases">Releases</a>
+          <a href="https://github.com/BogdanDolia/tsastat/blob/main/LICENSE">License</a>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>

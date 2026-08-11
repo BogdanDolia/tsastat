@@ -6,6 +6,9 @@
 [![License](https://img.shields.io/github/license/BogdanDolia/tsastat)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux-blue)](#requirements)
 
+[Project website](https://bogdandolia.github.io/tsastat/) ·
+[Interactive JSONL report viewer](https://bogdandolia.github.io/tsastat/#viewer)
+
 `tsastat` is a lightweight Linux CLI for per-thread scheduler and delay
 analysis. Its default `auto` backend combines an event-timed eBPF scheduler
 timeline, cumulative taskstats resource delays, and procfs identity/state
@@ -153,6 +156,23 @@ tsastat -p 1234 1
 ```
 
 Press `Ctrl-C` to stop continuous monitoring.
+
+## Project website
+
+The static project website lives in [`site/`](site/). It includes an
+interactive JSON Lines report viewer that parses files locally in the browser;
+report data is not uploaded or stored.
+
+Preview the website locally from the repository root:
+
+```bash
+python3 -m http.server 8000 --directory site
+```
+
+Then open <http://localhost:8000>. The GitHub Pages workflow publishes the
+same static files after website changes reach `main`. Before the first deploy,
+a repository administrator must select **Settings → Pages → Source: GitHub
+Actions** once.
 
 ## Common options
 
