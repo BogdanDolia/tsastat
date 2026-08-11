@@ -51,13 +51,18 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	defer b.Close()
 
+	reportedSampleInterval := cfg.SampleInterval
+	capabilities := b.Capabilities()
+	if capabilities.SupportsSchedulerEvents && !capabilities.SupportsDelayCounters {
+		reportedSampleInterval = 0
+	}
 	renderer, err := output.NewRenderer(output.RendererOptions{
 		Format:         cfg.Output,
 		Writer:         stdout,
 		PID:            cfg.PID,
 		Backend:        b.Name(),
 		Interval:       cfg.Interval,
-		SampleInterval: cfg.SampleInterval,
+		SampleInterval: reportedSampleInterval,
 		NoHeader:       cfg.NoHeader,
 	})
 	if err != nil {
@@ -66,15 +71,21 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if cfg.Output == "table" && !cfg.NoHeader {
-		fmt.Fprintf(stdout, "tsastat: pid=%d backend=%s interval=%s sample=%s\n\n", cfg.PID, b.Name(), cfg.Interval, cfg.SampleInterval)
+		if capabilities.SupportsSchedulerEvents && capabilities.SupportsDelayCounters {
+			fmt.Fprintf(stdout, "tsastat: pid=%d backend=%s interval=%s sample=%s mode=hybrid\n\n", cfg.PID, b.Name(), cfg.Interval, cfg.SampleInterval)
+		} else if capabilities.SupportsSchedulerEvents {
+			fmt.Fprintf(stdout, "tsastat: pid=%d backend=%s interval=%s mode=event-driven\n\n", cfg.PID, b.Name(), cfg.Interval)
+		} else {
+			fmt.Fprintf(stdout, "tsastat: pid=%d backend=%s interval=%s sample=%s\n\n", cfg.PID, b.Name(), cfg.Interval, cfg.SampleInterval)
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	c := collector.New(b, cfg.PID, cfg.Interval, cfg.SampleInterval)
-	err = c.Run(ctx, cfg.Count, func(stats []model.ThreadIntervalStats) error {
-		filtered, err := output.FilterAndSort(stats, output.FilterSortOptions{
+	err = c.Run(ctx, cfg.Count, func(report model.IntervalReport) error {
+		filtered, err := output.FilterAndSort(report.Threads, output.FilterSortOptions{
 			TID:      cfg.TID,
 			Comm:     cfg.Comm,
 			ShowIdle: cfg.ShowIdle,
@@ -83,7 +94,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return err
 		}
-		return renderer.Render(filtered)
+		report.Threads = filtered
+		return renderer.Render(report)
 	})
 	if err != nil {
 		var processGone model.ProcessNotFoundError

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/BogdanDolia/tsastat/internal/backend/ebpf"
+	"github.com/BogdanDolia/tsastat/internal/backend/hybrid"
 	"github.com/BogdanDolia/tsastat/internal/backend/proc"
 	"github.com/BogdanDolia/tsastat/internal/backend/taskstats"
 	"github.com/BogdanDolia/tsastat/internal/model"
@@ -37,12 +38,20 @@ func (e BackendError) Unwrap() error {
 
 func New(name string) (Backend, error) {
 	switch name {
-	case "", "proc":
+	case "":
+		return hybrid.New("auto"), nil
+	case "auto", "hybrid":
+		return hybrid.New(name), nil
+	case "proc":
 		return proc.New(), nil
 	case "taskstats":
-		return nil, BackendError{Name: name, Err: ErrNotImplemented}
+		b, err := taskstats.New()
+		if err != nil {
+			return nil, BackendError{Name: name, Err: err}
+		}
+		return b, nil
 	case "ebpf":
-		return nil, BackendError{Name: name, Err: ErrNotImplemented}
+		return ebpf.New(), nil
 	default:
 		return nil, BackendError{Name: name, Err: ErrUnsupported}
 	}
@@ -50,7 +59,9 @@ func New(name string) (Backend, error) {
 
 func Capabilities(name string) (model.BackendCapabilities, error) {
 	switch name {
-	case "", "proc":
+	case "", "auto", "hybrid":
+		return hybrid.Capabilities(), nil
+	case "proc":
 		return proc.Capabilities(), nil
 	case "taskstats":
 		return taskstats.Capabilities(), nil

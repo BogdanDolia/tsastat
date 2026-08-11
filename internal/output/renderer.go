@@ -12,7 +12,7 @@ import (
 var ErrOutputNotImplemented = errors.New("output format not implemented")
 
 type Renderer interface {
-	Render([]model.ThreadIntervalStats) error
+	Render(model.IntervalReport) error
 }
 
 type RendererOptions struct {

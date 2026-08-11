@@ -18,6 +18,9 @@ func TestParseConfigUsesDefaultSampleInterval(t *testing.T) {
 	if cfg.SampleInterval != 10*time.Millisecond {
 		t.Fatalf("sample interval = %s, want 10ms", cfg.SampleInterval)
 	}
+	if cfg.Backend != "auto" {
+		t.Fatalf("backend = %q, want auto", cfg.Backend)
+	}
 }
 
 func TestParseConfigAcceptsCustomSampleInterval(t *testing.T) {
@@ -37,5 +40,15 @@ func TestParseConfigRejectsSampleIntervalNotShorterThanReport(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "must be shorter") {
 		t.Fatalf("error = %q, want shorter-than validation", err)
+	}
+}
+
+func TestParseConfigIgnoresSampleCadenceForEBPFBackend(t *testing.T) {
+	cfg, err := parseConfig([]string{"-p", "123", "--backend", "ebpf", "--interval", "1s", "--sample", "2s"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseConfig returned error: %v", err)
+	}
+	if cfg.Backend != "ebpf" || cfg.SampleInterval != 2*time.Second {
+		t.Fatalf("config = %#v", cfg)
 	}
 }
