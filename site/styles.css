@@ -374,10 +374,26 @@ h1 span {
 
 .hero-lede {
   max-width: 610px;
-  margin: 0 0 32px;
+  margin: 0 0 12px;
   color: var(--text-soft);
   font-size: 19px;
   line-height: 1.68;
+}
+
+.hero-inspiration {
+  margin: 0 0 32px;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+.hero-inspiration::before {
+  content: "↳";
+  margin-right: 8px;
+  color: var(--green);
+}
+
+.hero-inspiration cite {
+  color: var(--text-soft);
 }
 
 .hero-actions,
