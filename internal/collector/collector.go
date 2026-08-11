@@ -98,6 +98,8 @@ func (c *Collector) runSchedulerEvents(ctx context.Context, eventBackend backend
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-stream.TargetExited():
+			return model.ProcessNotFoundError{PID: c.pid}
 		case event, ok := <-stream.Events():
 			if !ok {
 				return fmt.Errorf("ebpf scheduler event stream closed unexpectedly")
@@ -112,7 +114,7 @@ func (c *Collector) runSchedulerEvents(ctx context.Context, eventBackend backend
 			}
 		case <-timer.C:
 			boundary := acc.NextBoundary()
-			if err := flushSchedulerEvents(ctx, stream, acc); err != nil {
+			if err := flushSchedulerEvents(ctx, stream, acc, c.pid); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return nil
 				}
@@ -138,6 +140,10 @@ func (c *Collector) runHybrid(ctx context.Context, hybridBackend backend.HybridB
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil
+		}
+		var processGone model.ProcessNotFoundError
+		if errors.As(err, &processGone) {
+			return err
 		}
 		// Event tracing is an optional source for a hybrid backend. Snapshot()
 		// performs its own taskstats-to-proc fallback.
@@ -184,6 +190,8 @@ func (c *Collector) runHybridSchedulerEvents(
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-stream.TargetExited():
+			return model.ProcessNotFoundError{PID: c.pid}
 		case event, ok := <-stream.Events():
 			if !ok {
 				return fmt.Errorf("ebpf scheduler event stream closed unexpectedly")
@@ -202,7 +210,7 @@ func (c *Collector) runHybridSchedulerEvents(
 			}
 		case <-timer.C:
 			boundary := eventAcc.NextBoundary()
-			if err := flushSchedulerEvents(ctx, stream, eventAcc); err != nil {
+			if err := flushSchedulerEvents(ctx, stream, eventAcc, c.pid); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return nil
 				}
@@ -349,7 +357,7 @@ func (c *Collector) withSourceStatus(report model.IntervalReport) model.Interval
 	return report
 }
 
-func flushSchedulerEvents(ctx context.Context, stream model.SchedulerEventStream, acc *EventAccumulator) error {
+func flushSchedulerEvents(ctx context.Context, stream model.SchedulerEventStream, acc *EventAccumulator, pid int) error {
 	if err := stream.Flush(); err != nil {
 		return err
 	}
@@ -357,6 +365,8 @@ func flushSchedulerEvents(ctx context.Context, stream model.SchedulerEventStream
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-stream.TargetExited():
+			return model.ProcessNotFoundError{PID: pid}
 		case event, ok := <-stream.Events():
 			if !ok {
 				return fmt.Errorf("ebpf scheduler event stream closed during flush")

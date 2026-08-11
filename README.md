@@ -406,6 +406,14 @@ Consequences of this approach:
 | `taskstats` | Available on supported Linux kernels | Per-TID CPU, block I/O, swap-in, reclaim, thrashing, compaction, write-protect-copy, and IRQ delay-counter deltas |
 | `ebpf` | Available on supported Linux kernels | Event-timed on-CPU, runnable, sleep, D-state, and wakeup latency |
 
+The eBPF stream monitors the original process through a pidfd and stops as soon
+as that process exits, so a recycled numeric PID cannot silently become the new
+target. Scheduler events carry the boot-time identity used by the kernel and
+convert it to the same clock-tick identity exposed by `/proc`; this lets hybrid
+mode safely attach taskstats counters to threads created after startup. Proc
+samples bracket every `schedstat` read with two `stat` reads and discard an
+unstable TID identity instead of combining counters from different threads.
+
 Run `tsastat doctor` to see backend availability and relevant kernel warnings.
 
 ## Architecture

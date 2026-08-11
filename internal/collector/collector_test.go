@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BogdanDolia/tsastat/internal/backend"
 	"github.com/BogdanDolia/tsastat/internal/model"
 )
 
@@ -75,6 +76,55 @@ func TestCollectorUsesSchedulerEventStream(t *testing.T) {
 	if len(got.Threads) != 1 || got.Threads[0].Duration(model.StateSleeping) != 5*time.Millisecond ||
 		got.Threads[0].RunqueueWait != 5*time.Millisecond {
 		t.Fatalf("event threads = %#v", got.Threads)
+	}
+}
+
+func TestCollectorEventModesStopWhenTargetExits(t *testing.T) {
+	tests := []struct {
+		name    string
+		backend func(*fakeEventStream) backend.Backend
+	}{
+		{
+			name: "ebpf",
+			backend: func(stream *fakeEventStream) backend.Backend {
+				return &fakeEventBackend{stream: stream}
+			},
+		},
+		{
+			name: "hybrid without delay counters",
+			backend: func(stream *fakeEventStream) backend.Backend {
+				return &fakeHybridBackend{
+					stream:    stream,
+					snapshots: []model.ThreadSnapshot{eventInitialSnapshot(time.Now(), model.StateSleeping)},
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			exited := make(chan struct{})
+			close(exited)
+			stream := &fakeEventStream{
+				initial:      eventInitialSnapshot(time.Now(), model.StateSleeping),
+				events:       make(chan model.SchedulerEvent),
+				errors:       make(chan error),
+				flushed:      make(chan struct{}, 1),
+				targetExited: exited,
+			}
+			c := New(test.backend(stream), 10, time.Hour, time.Hour)
+			err := c.Run(context.Background(), 0, func(model.IntervalReport) error {
+				t.Fatal("collector emitted a report after target exit")
+				return nil
+			})
+			var processGone model.ProcessNotFoundError
+			if !errors.As(err, &processGone) || processGone.PID != 10 {
+				t.Fatalf("Run error = %v, want ProcessNotFoundError for pid 10", err)
+			}
+			if !stream.closed {
+				t.Fatal("event stream was not closed")
+			}
+		})
 	}
 }
 
@@ -155,6 +205,27 @@ func TestCollectorHybridFallsBackToSnapshots(t *testing.T) {
 	}
 }
 
+func TestCollectorHybridDoesNotFallbackAfterTargetExit(t *testing.T) {
+	b := &fakeHybridBackend{
+		openErr: model.ProcessNotFoundError{PID: 10},
+		snapshots: []model.ThreadSnapshot{
+			eventInitialSnapshot(time.Now(), model.StateSleeping),
+		},
+	}
+	c := New(b, 10, time.Second, time.Millisecond)
+	err := c.Run(context.Background(), 1, func(model.IntervalReport) error {
+		t.Fatal("collector emitted a report for an exited target")
+		return nil
+	})
+	var processGone model.ProcessNotFoundError
+	if !errors.As(err, &processGone) || processGone.PID != 10 {
+		t.Fatalf("Run error = %v, want ProcessNotFoundError for pid 10", err)
+	}
+	if b.snapshotCalls != 0 {
+		t.Fatalf("Snapshot calls = %d, want 0 after target exit", b.snapshotCalls)
+	}
+}
+
 func TestHybridMergeRejectsUnprovenThreadIdentity(t *testing.T) {
 	base := time.Unix(0, 0)
 	eventReport := model.IntervalReport{
@@ -180,6 +251,34 @@ func TestHybridMergeRejectsUnprovenThreadIdentity(t *testing.T) {
 	}
 	if merged.Quality.HybridIdentityMismatches != 1 {
 		t.Fatalf("identity mismatches = %d, want 1", merged.Quality.HybridIdentityMismatches)
+	}
+}
+
+func TestHybridMergeMatchesNewEventThreadByProcStartTicks(t *testing.T) {
+	base := time.Unix(0, 0)
+	eventReport := model.IntervalReport{
+		IntervalStart: base,
+		IntervalEnd:   base.Add(time.Second),
+		Threads: []model.ThreadIntervalStats{{
+			TID: 11, StartTimeTicks: 123, StartTimeNanoseconds: 456, SchedulerSource: ebpfSamplingMethod,
+		}},
+	}
+	auxiliary := model.IntervalReport{
+		IntervalStart: base,
+		IntervalEnd:   base.Add(time.Second),
+		Quality:       model.IntervalQuality{TaskstatsAvailable: true},
+		Threads: []model.ThreadIntervalStats{{
+			TID: 11, StartTimeTicks: 123, DelayVersion: 14, DelaySamplePairs: 1,
+			Delays: model.DelayIntervalCounters{CPU: model.DelayIntervalCounter{Available: true, Count: 1}},
+		}},
+	}
+
+	merged := mergeHybridReport(eventReport, auxiliary)
+	if !merged.Threads[0].DelayCountersAvailable() {
+		t.Fatalf("proven new thread did not receive delays: %#v", merged.Threads[0])
+	}
+	if merged.Quality.HybridIdentityMismatches != 0 {
+		t.Fatalf("identity mismatches = %d, want 0", merged.Quality.HybridIdentityMismatches)
 	}
 }
 
@@ -267,13 +366,14 @@ func (b *fakeEventBackend) Close() error {
 }
 
 type fakeEventStream struct {
-	initial model.ThreadSnapshot
-	events  chan model.SchedulerEvent
-	errors  chan error
-	flushed chan struct{}
-	lost    uint64
-	pending []model.SchedulerEvent
-	closed  bool
+	initial      model.ThreadSnapshot
+	events       chan model.SchedulerEvent
+	errors       chan error
+	flushed      chan struct{}
+	targetExited <-chan struct{}
+	lost         uint64
+	pending      []model.SchedulerEvent
+	closed       bool
 }
 
 func (s *fakeEventStream) InitialSnapshot() model.ThreadSnapshot {
@@ -286,6 +386,10 @@ func (s *fakeEventStream) Events() <-chan model.SchedulerEvent {
 
 func (s *fakeEventStream) Errors() <-chan error {
 	return s.errors
+}
+
+func (s *fakeEventStream) TargetExited() <-chan struct{} {
+	return s.targetExited
 }
 
 func (s *fakeEventStream) Flush() error {

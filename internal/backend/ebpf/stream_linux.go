@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -25,14 +27,20 @@ type eventStream struct {
 	errors                 chan error
 	done                   chan struct{}
 	flushed                chan struct{}
+	targetExited           chan struct{}
+	targetFD               int
 	reader                 *ringbuf.Reader
 	objects                schedulerObjects
 	links                  []link.Link
 	monotonicNS            uint64
 	wallBase               time.Time
 	calibrationUncertainty time.Duration
+	boottimeOffsetNS       int64
+	clockTicksPerSecond    uint64
+	identityConversion     bool
 	lastLost               uint64
 	closeOnce              sync.Once
+	targetExitOnce         sync.Once
 	closeErr               error
 }
 
@@ -40,15 +48,25 @@ func (b *Backend) OpenSchedulerEvents(ctx context.Context, pid int) (model.Sched
 	if pid <= 0 {
 		return nil, fmt.Errorf("invalid pid %d", pid)
 	}
+	targetFD, err := unix.PidfdOpen(pid, 0)
+	if err != nil {
+		if errors.Is(err, unix.ESRCH) {
+			return nil, model.ProcessNotFoundError{PID: pid}
+		}
+		return nil, fmt.Errorf("open pidfd for target pid %d: %w", pid, err)
+	}
 
 	memlockErr := rlimit.RemoveMemlock()
 	stream := &eventStream{
-		events:  make(chan model.SchedulerEvent, 4096),
-		errors:  make(chan error, 1),
-		done:    make(chan struct{}),
-		flushed: make(chan struct{}, 1),
+		events:       make(chan model.SchedulerEvent, 4096),
+		errors:       make(chan error, 1),
+		done:         make(chan struct{}),
+		flushed:      make(chan struct{}, 1),
+		targetExited: make(chan struct{}),
+		targetFD:     targetFD,
 	}
 	if err := loadSchedulerObjects(&stream.objects, nil); err != nil {
+		_ = unix.Close(targetFD)
 		if memlockErr != nil {
 			return nil, fmt.Errorf("load scheduler BPF objects: %w (memlock adjustment also failed: %v)", err, memlockErr)
 		}
@@ -97,8 +115,20 @@ func (b *Backend) OpenSchedulerEvents(ctx context.Context, pid int) (model.Sched
 		return nil, fmt.Errorf("initial proc snapshot after eBPF attach: %w", err)
 	}
 	stream.initial = initial
+	stream.boottimeOffsetNS, stream.clockTicksPerSecond, stream.identityConversion = loadIdentityConversion(os.ReadFile, strconv.IntSize/8)
+
+	exited, err := pollTargetExited(stream.targetFD, 0)
+	if err != nil {
+		stream.Close()
+		return nil, fmt.Errorf("poll pidfd for target pid %d: %w", pid, err)
+	}
+	if exited {
+		stream.Close()
+		return nil, model.ProcessNotFoundError{PID: pid}
+	}
 
 	go stream.readEvents()
+	go stream.watchTarget()
 	return stream, nil
 }
 
@@ -112,6 +142,10 @@ func (s *eventStream) Events() <-chan model.SchedulerEvent {
 
 func (s *eventStream) Errors() <-chan error {
 	return s.errors
+}
+
+func (s *eventStream) TargetExited() <-chan struct{} {
+	return s.targetExited
 }
 
 func (s *eventStream) Flush() error {
@@ -149,6 +183,9 @@ func (s *eventStream) Close() error {
 			closeErrors = append(closeErrors, attached.Close())
 		}
 		closeErrors = append(closeErrors, s.objects.Close())
+		if s.targetFD >= 0 {
+			closeErrors = append(closeErrors, unix.Close(s.targetFD))
+		}
 		s.closeErr = errors.Join(closeErrors...)
 	})
 	return s.closeErr
@@ -199,7 +236,66 @@ func (s *eventStream) decodeEvent(raw []byte) (model.SchedulerEvent, error) {
 		return model.SchedulerEvent{}, err
 	}
 	event.Timestamp = s.kernelTime(timestampNS)
+	if s.identityConversion {
+		event.StartTimeTicks, _ = procStartTimeTicks(
+			event.StartTimeNanoseconds,
+			s.boottimeOffsetNS,
+			s.clockTicksPerSecond,
+		)
+	}
 	return event, nil
+}
+
+func (s *eventStream) watchTarget() {
+	for {
+		exited, err := pollTargetExited(s.targetFD, 100*time.Millisecond)
+		if err != nil {
+			if errors.Is(err, unix.EINTR) {
+				continue
+			}
+			select {
+			case <-s.done:
+				return
+			default:
+				s.signalTargetExit()
+				return
+			}
+		}
+		if exited {
+			select {
+			case <-s.done:
+				return
+			default:
+				s.signalTargetExit()
+			}
+			return
+		}
+		select {
+		case <-s.done:
+			return
+		default:
+		}
+	}
+}
+
+func (s *eventStream) signalTargetExit() {
+	s.targetExitOnce.Do(func() {
+		close(s.targetExited)
+	})
+}
+
+func pollTargetExited(fd int, timeout time.Duration) (bool, error) {
+	pollFDs := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	timeoutMilliseconds := int(timeout / time.Millisecond)
+	ready, err := unix.Poll(pollFDs, timeoutMilliseconds)
+	if err != nil {
+		return false, err
+	}
+	if ready == 0 {
+		return false, nil
+	}
+	const exitEvents = unix.POLLIN | unix.POLLERR | unix.POLLHUP | unix.POLLNVAL
+	return pollFDs[0].Revents&exitEvents != 0, nil
 }
 
 func (s *eventStream) kernelTime(timestampNS uint64) time.Time {

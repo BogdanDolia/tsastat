@@ -13,7 +13,8 @@ import (
 )
 
 type Backend struct {
-	root string
+	root     string
+	readFile func(string) ([]byte, error)
 }
 
 func New() *Backend {
@@ -21,7 +22,7 @@ func New() *Backend {
 }
 
 func NewWithRoot(root string) *Backend {
-	return &Backend{root: root}
+	return &Backend{root: root, readFile: os.ReadFile}
 }
 
 func (b *Backend) Name() string {
@@ -82,38 +83,13 @@ func (b *Backend) Snapshot(ctx context.Context, pid int) (model.ThreadSnapshot, 
 			continue
 		}
 
-		statPath := filepath.Join(taskDir, entry.Name(), "stat")
-		readStartedAt := time.Now()
-		data, err := os.ReadFile(statPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			if os.IsPermission(err) {
-				return model.ThreadSnapshot{}, fmt.Errorf("permission denied reading %s: %w", statPath, err)
-			}
-			return model.ThreadSnapshot{}, fmt.Errorf("read %s: %w", statPath, err)
-		}
-
-		stat, err := procfs.ParseProcStatLine(string(data))
-		if err != nil {
-			return model.ThreadSnapshot{}, fmt.Errorf("parse %s: %w", statPath, err)
-		}
-
-		schedstat, err := b.readSchedstat(filepath.Join(taskDir, entry.Name(), "schedstat"))
+		sample, stable, err := b.readStableTask(pid, filepath.Join(taskDir, entry.Name()))
 		if err != nil {
 			return model.ThreadSnapshot{}, err
 		}
-		readFinishedAt := time.Now()
-		samples = append(samples, model.ThreadSample{
-			PID:            pid,
-			TID:            stat.TID,
-			StartTimeTicks: stat.StartTimeTicks,
-			Comm:           stat.Comm,
-			State:          model.StateFromProc(stat.State),
-			Timestamp:      midpoint(readStartedAt, readFinishedAt),
-			Schedstat:      schedstat,
-		})
+		if stable {
+			samples = append(samples, sample)
+		}
 	}
 
 	return model.ThreadSnapshot{
@@ -131,8 +107,66 @@ func midpoint(start, end time.Time) time.Time {
 	return start.Add(end.Sub(start) / 2)
 }
 
+func (b *Backend) readStableTask(pid int, taskPath string) (model.ThreadSample, bool, error) {
+	const attempts = 2
+	statPath := filepath.Join(taskPath, "stat")
+	schedstatPath := filepath.Join(taskPath, "schedstat")
+	for attempt := 0; attempt < attempts; attempt++ {
+		readStartedAt := time.Now()
+		before, exists, err := b.readTaskStat(statPath)
+		if err != nil {
+			return model.ThreadSample{}, false, err
+		}
+		if !exists {
+			continue
+		}
+
+		schedstat, err := b.readSchedstat(schedstatPath)
+		if err != nil {
+			return model.ThreadSample{}, false, err
+		}
+		after, exists, err := b.readTaskStat(statPath)
+		if err != nil {
+			return model.ThreadSample{}, false, err
+		}
+		readFinishedAt := time.Now()
+		if !exists || before.TID != after.TID || before.StartTimeTicks != after.StartTimeTicks {
+			continue
+		}
+
+		return model.ThreadSample{
+			PID:            pid,
+			TID:            after.TID,
+			StartTimeTicks: after.StartTimeTicks,
+			Comm:           after.Comm,
+			State:          model.StateFromProc(after.State),
+			Timestamp:      midpoint(readStartedAt, readFinishedAt),
+			Schedstat:      schedstat,
+		}, true, nil
+	}
+	return model.ThreadSample{}, false, nil
+}
+
+func (b *Backend) readTaskStat(path string) (procfs.TaskStat, bool, error) {
+	data, err := b.readFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return procfs.TaskStat{}, false, nil
+		}
+		if os.IsPermission(err) {
+			return procfs.TaskStat{}, false, fmt.Errorf("permission denied reading %s: %w", path, err)
+		}
+		return procfs.TaskStat{}, false, fmt.Errorf("read %s: %w", path, err)
+	}
+	stat, err := procfs.ParseProcStatLine(string(data))
+	if err != nil {
+		return procfs.TaskStat{}, false, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return stat, true, nil
+}
+
 func (b *Backend) readSchedstat(path string) (model.SchedstatCounters, error) {
-	data, err := os.ReadFile(path)
+	data, err := b.readFile(path)
 	if err != nil {
 		if os.IsNotExist(err) || os.IsPermission(err) {
 			return model.SchedstatCounters{}, nil

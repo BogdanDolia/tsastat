@@ -102,8 +102,7 @@ func (a *EventAccumulator) Observe(event model.SchedulerEvent) {
 	}
 
 	track := a.tracks[event.TID]
-	if track != nil && event.StartTimeNanoseconds != 0 && track.StartTimeNanoseconds != 0 &&
-		event.StartTimeNanoseconds != track.StartTimeNanoseconds {
+	if track != nil && schedulerIdentityChanged(track, event) {
 		a.recordInitializationRace(event.Timestamp)
 		track.alive = false
 		track = nil
@@ -112,6 +111,7 @@ func (a *EventAccumulator) Observe(event model.SchedulerEvent) {
 		track = &schedulerTrack{
 			PID:                  event.PID,
 			TID:                  event.TID,
+			StartTimeTicks:       event.StartTimeTicks,
 			StartTimeNanoseconds: event.StartTimeNanoseconds,
 			Comm:                 event.Comm,
 			state:                model.SchedulerStateUnknown,
@@ -122,6 +122,9 @@ func (a *EventAccumulator) Observe(event model.SchedulerEvent) {
 		}
 		a.tracks[event.TID] = track
 	} else {
+		if event.StartTimeTicks != 0 {
+			track.StartTimeTicks = event.StartTimeTicks
+		}
 		if event.StartTimeNanoseconds != 0 {
 			track.StartTimeNanoseconds = event.StartTimeNanoseconds
 		}
@@ -156,6 +159,13 @@ func (a *EventAccumulator) Observe(event model.SchedulerEvent) {
 	a.applyTransition(track, event, true)
 	track.since = event.Timestamp
 	track.lastEvent = event.Timestamp
+}
+
+func schedulerIdentityChanged(track *schedulerTrack, event model.SchedulerEvent) bool {
+	return (event.StartTimeTicks != 0 && track.StartTimeTicks != 0 &&
+		event.StartTimeTicks != track.StartTimeTicks) ||
+		(event.StartTimeNanoseconds != 0 && track.StartTimeNanoseconds != 0 &&
+			event.StartTimeNanoseconds != track.StartTimeNanoseconds)
 }
 
 func (a *EventAccumulator) Advance(watermark time.Time, lostEventsTotal uint64) []model.IntervalReport {

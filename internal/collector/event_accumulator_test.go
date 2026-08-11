@@ -104,6 +104,21 @@ func TestEventAccumulatorDoesNotGuessInitialRunningState(t *testing.T) {
 	}
 }
 
+func TestEventAccumulatorCarriesNewThreadProcIdentity(t *testing.T) {
+	base := time.Unix(0, 0)
+	acc := NewEventAccumulator(time.Second, model.ThreadSnapshot{StartedAt: base, FinishedAt: base})
+	event := schedulerEvent(base.Add(100*time.Millisecond), model.SchedulerEventSwitchIn, model.SchedulerStateOnCPU)
+	event.TID = 99
+	event.StartTimeTicks = 789
+	event.StartTimeNanoseconds = 456
+	acc.Observe(event)
+
+	stat := onlyThread(t, acc.Advance(base.Add(time.Second), 0))
+	if stat.StartTimeTicks != 789 || stat.StartTimeNanoseconds != 456 {
+		t.Fatalf("new thread identity = ticks %d ns %d", stat.StartTimeTicks, stat.StartTimeNanoseconds)
+	}
+}
+
 func TestEventAccumulatorMarksWakeupWithoutSwitchInIncomplete(t *testing.T) {
 	base := time.Unix(0, 0)
 	acc := NewEventAccumulator(time.Second, eventInitialSnapshot(base, model.StateSleeping))
@@ -140,6 +155,7 @@ func schedulerEvent(at time.Time, kind model.SchedulerEventKind, state model.Sch
 		Timestamp:            at,
 		PID:                  10,
 		TID:                  11,
+		StartTimeTicks:       123,
 		StartTimeNanoseconds: 456,
 		Comm:                 "worker",
 		CPU:                  2,

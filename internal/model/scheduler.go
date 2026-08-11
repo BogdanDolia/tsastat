@@ -28,6 +28,7 @@ type SchedulerEvent struct {
 	Timestamp            time.Time
 	PID                  int
 	TID                  int
+	StartTimeTicks       uint64
 	StartTimeNanoseconds uint64
 	Comm                 string
 	CPU                  int
@@ -39,6 +40,7 @@ type SchedulerEventStream interface {
 	InitialSnapshot() ThreadSnapshot
 	Events() <-chan SchedulerEvent
 	Errors() <-chan error
+	TargetExited() <-chan struct{}
 	Flush() error
 	Flushed() <-chan struct{}
 	LostEvents() uint64

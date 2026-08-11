@@ -23,7 +23,7 @@ struct task_struct {
 	int pid;
 	int tgid;
 	char comm[16];
-	__u64 start_time;
+	__u64 start_boottime;
 } __attribute__((preserve_access_index));
 
 struct scheduler_event {
@@ -83,7 +83,7 @@ static __always_inline int read_task_identity(struct task_struct *task,
 	if (bpf_probe_read_kernel(tid, sizeof(*tid), CORE_FIELD(&task->pid)) < 0)
 		return -1;
 	if (bpf_probe_read_kernel(start_time_ns, sizeof(*start_time_ns),
-				  CORE_FIELD(&task->start_time)) < 0)
+				  CORE_FIELD(&task->start_boottime)) < 0)
 		return -1;
 	return 0;
 }
