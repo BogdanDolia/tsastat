@@ -42,7 +42,7 @@ func New(name string) (Backend, error) {
 	case "taskstats":
 		return nil, BackendError{Name: name, Err: ErrNotImplemented}
 	case "ebpf":
-		return nil, BackendError{Name: name, Err: ErrNotImplemented}
+		return ebpf.New(), nil
 	default:
 		return nil, BackendError{Name: name, Err: ErrUnsupported}
 	}

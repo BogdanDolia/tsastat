@@ -42,13 +42,14 @@ func (r *JSONRenderer) Render(report model.IntervalReport) error {
 
 	for _, stat := range report.Threads {
 		event.Threads = append(event.Threads, jsonThread{
-			TID:            stat.TID,
-			StartTimeTicks: stat.StartTimeTicks,
-			Comm:           stat.Comm,
-			DurationsMS:    durationsMS(stat),
-			Percent:        percents(stat),
-			Quality:        newJSONThreadQuality(stat),
-			Scheduler:      newJSONSchedulerMetrics(stat),
+			TID:                  stat.TID,
+			StartTimeTicks:       stat.StartTimeTicks,
+			StartTimeNanoseconds: stat.StartTimeNanoseconds,
+			Comm:                 stat.Comm,
+			DurationsMS:          durationsMS(stat),
+			Percent:              percents(stat),
+			Quality:              newJSONThreadQuality(stat),
+			Scheduler:            newJSONSchedulerMetrics(stat),
 		})
 	}
 
@@ -68,24 +69,32 @@ type jsonInterval struct {
 }
 
 type jsonThread struct {
-	TID            int                  `json:"tid"`
-	StartTimeTicks uint64               `json:"start_time_ticks"`
-	Comm           string               `json:"comm"`
-	DurationsMS    map[string]int64     `json:"durations_ms"`
-	Percent        map[string]float64   `json:"percent"`
-	Quality        jsonThreadQuality    `json:"quality"`
-	Scheduler      jsonSchedulerMetrics `json:"scheduler"`
+	TID                  int                  `json:"tid"`
+	StartTimeTicks       uint64               `json:"start_time_ticks"`
+	StartTimeNanoseconds uint64               `json:"start_time_ns,omitempty"`
+	Comm                 string               `json:"comm"`
+	DurationsMS          map[string]int64     `json:"durations_ms"`
+	Percent              map[string]float64   `json:"percent"`
+	Quality              jsonThreadQuality    `json:"quality"`
+	Scheduler            jsonSchedulerMetrics `json:"scheduler"`
 }
 
 type jsonIntervalQuality struct {
-	SamplingMethod            string `json:"sampling_method"`
-	SnapshotCount             int    `json:"snapshot_count"`
-	MaxScanDurationMS         int64  `json:"max_scan_duration_ms"`
-	MaxSampleGapMS            int64  `json:"max_sample_gap_ms"`
-	MissedTransitionsPossible bool   `json:"missed_transitions_possible"`
-	SchedstatAvailable        bool   `json:"schedstat_available"`
-	SchedstatThreadCount      int    `json:"schedstat_thread_count"`
-	SchedstatCounterResets    int    `json:"schedstat_counter_resets"`
+	SamplingMethod                string `json:"sampling_method"`
+	SnapshotCount                 int    `json:"snapshot_count"`
+	MaxScanDurationMS             int64  `json:"max_scan_duration_ms"`
+	MaxSampleGapMS                int64  `json:"max_sample_gap_ms"`
+	MissedTransitionsPossible     bool   `json:"missed_transitions_possible"`
+	SchedstatAvailable            bool   `json:"schedstat_available"`
+	SchedstatThreadCount          int    `json:"schedstat_thread_count"`
+	SchedstatCounterResets        int    `json:"schedstat_counter_resets"`
+	SchedulerEventTimeline        bool   `json:"scheduler_event_timeline"`
+	SchedulerEventCount           int    `json:"scheduler_event_count"`
+	SchedulerLostEventsTotal      uint64 `json:"scheduler_lost_events_total"`
+	SchedulerLateEvents           int    `json:"scheduler_late_events"`
+	SchedulerIncompleteWakeups    int    `json:"scheduler_incomplete_wakeups"`
+	InitializationRaces           int    `json:"initialization_races"`
+	ClockCalibrationUncertaintyNS int64  `json:"clock_calibration_uncertainty_ns"`
 }
 
 type jsonThreadQuality struct {
@@ -100,6 +109,7 @@ type jsonSchedulerMetrics struct {
 	Available                      bool    `json:"available"`
 	Source                         string  `json:"source"`
 	CounterDeltasExactBetweenReads bool    `json:"counter_deltas_exact_between_reads"`
+	EventTimed                     bool    `json:"event_timed"`
 	WindowAllocation               string  `json:"window_allocation"`
 	OnCPUMS                        int64   `json:"on_cpu_ms"`
 	RunqueueWaitMS                 int64   `json:"runqueue_wait_ms"`
@@ -110,6 +120,12 @@ type jsonSchedulerMetrics struct {
 	SamplePairs                    int     `json:"sample_pairs"`
 	MaxSampleGapMS                 int64   `json:"max_sample_gap_ms"`
 	CounterResets                  int     `json:"counter_resets"`
+	EventCount                     int     `json:"event_count"`
+	WakeupCount                    int     `json:"wakeup_count"`
+	WakeupLatencyTotalUS           int64   `json:"wakeup_latency_total_us"`
+	WakeupLatencyAverageUS         int64   `json:"wakeup_latency_avg_us"`
+	WakeupLatencyMaxUS             int64   `json:"wakeup_latency_max_us"`
+	IncompleteWakeupCount          int     `json:"incomplete_wakeup_count"`
 }
 
 func durationsMS(stat model.ThreadIntervalStats) map[string]int64 {
@@ -137,37 +153,62 @@ func percents(stat model.ThreadIntervalStats) map[string]float64 {
 
 func newJSONIntervalQuality(quality model.IntervalQuality) jsonIntervalQuality {
 	return jsonIntervalQuality{
-		SamplingMethod:            quality.SamplingMethod,
-		SnapshotCount:             quality.SnapshotCount,
-		MaxScanDurationMS:         quality.MaxScanDuration.Milliseconds(),
-		MaxSampleGapMS:            quality.MaxSampleGap.Milliseconds(),
-		MissedTransitionsPossible: quality.MissedTransitionsPossible,
-		SchedstatAvailable:        quality.SchedstatAvailable,
-		SchedstatThreadCount:      quality.SchedstatThreadCount,
-		SchedstatCounterResets:    quality.SchedstatCounterResets,
+		SamplingMethod:                quality.SamplingMethod,
+		SnapshotCount:                 quality.SnapshotCount,
+		MaxScanDurationMS:             quality.MaxScanDuration.Milliseconds(),
+		MaxSampleGapMS:                quality.MaxSampleGap.Milliseconds(),
+		MissedTransitionsPossible:     quality.MissedTransitionsPossible,
+		SchedstatAvailable:            quality.SchedstatAvailable,
+		SchedstatThreadCount:          quality.SchedstatThreadCount,
+		SchedstatCounterResets:        quality.SchedstatCounterResets,
+		SchedulerEventTimeline:        quality.SchedulerEventTimeline,
+		SchedulerEventCount:           quality.SchedulerEventCount,
+		SchedulerLostEventsTotal:      quality.SchedulerLostEventsTotal,
+		SchedulerLateEvents:           quality.SchedulerLateEvents,
+		SchedulerIncompleteWakeups:    quality.SchedulerIncompleteWakeups,
+		InitializationRaces:           quality.InitializationRaces,
+		ClockCalibrationUncertaintyNS: quality.ClockCalibrationUncertainty.Nanoseconds(),
 	}
 }
 
 func newJSONSchedulerMetrics(stat model.ThreadIntervalStats) jsonSchedulerMetrics {
-	available := stat.SchedstatAvailable()
+	available := stat.SchedulerAvailable() || stat.SchedstatAvailable()
+	source := stat.SchedulerSource
+	if source == "" && stat.SchedstatAvailable() {
+		source = "proc_schedstat"
+	}
+	eventTimed := source == "ebpf_sched_events"
 	windowAllocation := "unavailable"
-	if available {
+	if eventTimed {
+		windowAllocation = "exact_event_timestamps"
+	} else if available {
 		windowAllocation = "proportional_by_wall_time"
+	}
+	observed := stat.SchedulerObserved
+	if observed <= 0 {
+		observed = stat.SchedstatObserved
 	}
 	return jsonSchedulerMetrics{
 		Available:                      available,
-		Source:                         "proc_schedstat",
-		CounterDeltasExactBetweenReads: available,
+		Source:                         source,
+		CounterDeltasExactBetweenReads: source == "proc_schedstat" && available,
+		EventTimed:                     eventTimed,
 		WindowAllocation:               windowAllocation,
 		OnCPUMS:                        stat.OnCPU.Milliseconds(),
 		RunqueueWaitMS:                 stat.RunqueueWait.Milliseconds(),
 		Timeslices:                     stat.Timeslices,
-		ObservedMS:                     stat.SchedstatObserved.Milliseconds(),
+		ObservedMS:                     observed.Milliseconds(),
 		OnCPUPercent:                   stat.OnCPUPercent(),
 		RunqueueWaitPercent:            stat.RunqueueWaitPercent(),
 		SamplePairs:                    stat.SchedstatSamplePairs,
 		MaxSampleGapMS:                 stat.SchedstatMaxSampleGap.Milliseconds(),
 		CounterResets:                  stat.SchedstatCounterResets,
+		EventCount:                     stat.SchedulerEventCount,
+		WakeupCount:                    stat.WakeupCount,
+		WakeupLatencyTotalUS:           stat.WakeupLatencyTotal.Microseconds(),
+		WakeupLatencyAverageUS:         stat.AverageWakeupLatency().Microseconds(),
+		WakeupLatencyMaxUS:             stat.WakeupLatencyMax.Microseconds(),
+		IncompleteWakeupCount:          stat.IncompleteWakeupCount,
 	}
 }
 

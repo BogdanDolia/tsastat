@@ -60,7 +60,7 @@ func parseConfig(args []string, stderr io.Writer) (Config, error) {
 	fs.IntVar(&cfg.TID, "tid", 0, "filter by thread ID")
 	fs.StringVar(&cfg.Comm, "comm", "", "filter by thread name substring or glob pattern")
 	fs.BoolVar(&cfg.ShowIdle, "show-idle", false, "show threads observed in the idle state")
-	fs.StringVar(&cfg.Sort, "sort", cfg.Sort, "sort field: tid, comm, running, sleeping, uninterruptible, total")
+	fs.StringVar(&cfg.Sort, "sort", cfg.Sort, "sort field: tid, comm, running, sleeping, uninterruptible, on_cpu, runnable, wakeup_latency, total")
 	fs.BoolVar(&cfg.NoHeader, "no-header", false, "suppress table headers")
 	fs.BoolVar(&cfg.Version, "version", false, "print version")
 
@@ -104,7 +104,7 @@ func parseConfig(args []string, stderr io.Writer) (Config, error) {
 	if cfg.SampleInterval <= 0 {
 		return cfg, fmt.Errorf("invalid sample interval %s", cfg.SampleInterval)
 	}
-	if cfg.SampleInterval >= cfg.Interval {
+	if cfg.Backend != "ebpf" && cfg.SampleInterval >= cfg.Interval {
 		return cfg, fmt.Errorf("sample interval %s must be shorter than report interval %s", cfg.SampleInterval, cfg.Interval)
 	}
 	if countValue.set && cfg.Count <= 0 {
@@ -199,10 +199,9 @@ Examples:
   tsastat -p 1234 -i 1s --sample 10ms --count 10
   tsastat -p 1234 -i 1s --sample 20ms --output json
 
-tsastat samples Linux thread states repeatedly within each report interval.
-The proc backend is a sampling approximation: it can miss short-lived state
-transitions between samples, and R means running or runnable, not necessarily
-actively on CPU.
+The proc backend samples Linux thread states repeatedly and can miss short
+transitions. The ebpf backend consumes scheduler events and separates on-CPU
+time from runnable wait, sleep, and D-state time.
 
 Flags:
 `

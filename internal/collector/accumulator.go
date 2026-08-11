@@ -152,7 +152,10 @@ func (a *Accumulator) addSchedstatDelta(sample model.ThreadSample, start, end ti
 		stat.OnCPU += nanosecondsDuration(onCPUEnd - onCPUStart)
 		stat.RunqueueWait += nanosecondsDuration(runqueueEnd - runqueueStart)
 		stat.Timeslices += timeslicesEnd - timeslicesStart
-		stat.SchedstatObserved += overlapEnd.Sub(overlapStart)
+		observed := overlapEnd.Sub(overlapStart)
+		stat.SchedstatObserved += observed
+		stat.SchedulerObserved += observed
+		stat.SchedulerSource = "proc_schedstat"
 		stat.SchedstatSamplePairs++
 		if gap > stat.SchedstatMaxSampleGap {
 			stat.SchedstatMaxSampleGap = gap
@@ -342,13 +345,14 @@ func (a *Accumulator) threadStats(index int64, sample model.ThreadSample) *model
 	if !exists {
 		start, end := a.windowBounds(index)
 		stat = &model.ThreadIntervalStats{
-			PID:            sample.PID,
-			TID:            sample.TID,
-			StartTimeTicks: sample.StartTimeTicks,
-			Comm:           sample.Comm,
-			IntervalStart:  start,
-			IntervalEnd:    end,
-			Durations:      make(map[model.ThreadState]time.Duration),
+			PID:                  sample.PID,
+			TID:                  sample.TID,
+			StartTimeTicks:       sample.StartTimeTicks,
+			StartTimeNanoseconds: sample.StartTimeNanoseconds,
+			Comm:                 sample.Comm,
+			IntervalStart:        start,
+			IntervalEnd:          end,
+			Durations:            make(map[model.ThreadState]time.Duration),
 		}
 		window.stats[identity] = stat
 	}
@@ -400,6 +404,9 @@ func sortedStats(statsByIdentity map[model.ThreadIdentity]*model.ThreadIntervalS
 	}
 	sort.Slice(identities, func(i, j int) bool {
 		if identities[i].TID == identities[j].TID {
+			if identities[i].StartTimeTicks == identities[j].StartTimeTicks {
+				return identities[i].StartTimeNanoseconds < identities[j].StartTimeNanoseconds
+			}
 			return identities[i].StartTimeTicks < identities[j].StartTimeTicks
 		}
 		return identities[i].TID < identities[j].TID

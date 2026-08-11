@@ -6,22 +6,21 @@
 [![License](https://img.shields.io/github/license/BogdanDolia/tsastat)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux-blue)](#requirements)
 
-`tsastat` is a lightweight Linux CLI for sampled per-thread state analysis.
-Point it at a process to see which threads are running, sleeping, waiting on
-I/O, stopped, or becoming zombies during each reporting interval.
+`tsastat` is a lightweight Linux CLI for per-thread scheduler analysis. Its
+eBPF backend builds an event-timed scheduler timeline, while the proc backend
+provides a lower-privilege sampling fallback.
 
 ```text
-tsastat: pid=4242 backend=proc interval=1s sample=10ms
+tsastat: pid=4242 backend=ebpf interval=1s mode=event-driven
 
-TIME      PID   TID   START_TICKS  COMM       RUN_ms  CPU_ms  RQ_ms  SLICES  SS_OBS_ms  SLEEP_ms  D_ms  STOP_ms  Z_ms  UNK_ms  OBS_ms  GAP_ms  UNCERT_ms  RUN_%  SLEEP_%  D_%
-12:10:01  4242  4242  987650       app        18      16      2      5       1000       982       0     0        0     0       1000    11      5          1.8    98.2     0.0
-12:10:01  4242  4243  987655       worker-1   240     230     10     30      1000       760       0     0        0     0       1000    12      10         24.0   76.0     0.0
-12:10:01  4242  4244  987659       io-worker  10      8       2      3       1000       900       90    0        0     0       1000    11      10         1.0    90.0     9.0
+TIME      PID   TID   START_TICKS  START_NS     COMM       RUN_ms  CPU_ms  RQ_ms  SLICES  SCHED_OBS_ms  EVTS  WAKEUPS  INCOMP_WAKE  WAKE_AVG_us  WAKE_MAX_us  LOST_TOTAL  LATE  INIT_RACE  CLK_UNCERT_ns  SLEEP_ms  D_ms  STOP_ms  Z_ms  UNK_ms  OBS_ms  GAP_ms  UNCERT_ms  RUN_%  SLEEP_%  D_%
+12:10:01  4242  4243  0            98765500000  worker-1   240     210     30     28      1000          83    12       0            41           115          0           0     0          180            750       10    0        0     0       1000    0       0          24.0   75.0     1.0
 ```
 
 > [!IMPORTANT]
-> The current `proc` backend is a sampling approximation, not a scheduler
-> timeline. It can miss state transitions that happen between samples.
+> The `ebpf` backend is exact only while its scheduler event stream is
+> complete. Always inspect the lost-event and late-event quality fields. The
+> `proc` backend remains a sampling approximation.
 
 ## Why tsastat?
 
@@ -32,7 +31,9 @@ observed interval?**
 It is useful for:
 
 - finding unexpectedly busy or permanently sleeping threads;
-- spotting threads observed in uninterruptible I/O wait (`D`);
+- spotting threads observed in uninterruptible sleep (`D`);
+- separating actual on-CPU time from runnable runqueue wait;
+- measuring wakeup-to-switch-in scheduler latency;
 - comparing thread behavior before and during a workload;
 - exporting interval data as JSON Lines for later analysis;
 - learning how Linux exposes task state through procfs.
@@ -45,6 +46,19 @@ It is useful for:
 
 The `proc` backend does not normally require root when inspecting your own
 processes.
+
+The `ebpf` backend additionally requires:
+
+- upstream Linux 6.1 or newer for the four-argument `sched_switch`
+  `prev_state` tracepoint contract (vendor backports may also work);
+- kernel BTF at `/sys/kernel/btf/vmlinux`;
+- `CONFIG_BPF`, `CONFIG_BPF_SYSCALL`, `CONFIG_BPF_EVENTS`, and
+  `CONFIG_TRACEPOINTS`;
+- permission to load tracing BPF programs, normally root or an appropriate
+  `CAP_BPF`/`CAP_PERFMON` configuration.
+
+The CO-RE BPF object is embedded in the binary. Clang, bpftool, and kernel
+headers are not required at runtime.
 
 ## Installation
 
@@ -70,6 +84,12 @@ Check which backends are available:
 
 ```bash
 tsastat doctor
+```
+
+Capture an event-timed scheduler timeline:
+
+```bash
+sudo tsastat -p 1234 --backend ebpf --interval 1s --count 10
 ```
 
 Monitor a process for ten one-second intervals while sampling every 10ms:
@@ -98,37 +118,44 @@ Press `Ctrl-C` to stop continuous monitoring.
 | --- | --- | --- |
 | `-p`, `--pid` | Target process ID | required |
 | `-i`, `--interval` | Time between aggregated reports | required |
-| `--sample` | Time between procfs samples | `10ms` |
+| `--sample` | Time between procfs samples; ignored by `ebpf` | `10ms` |
 | `-c`, `--count` | Number of reports; omitted means continuous | continuous |
 | `--tid` | Show only one thread ID | all threads |
 | `--comm` | Filter thread names by substring or glob | no filter |
-| `--sort` | Sort by `tid`, `comm`, `running`, `sleeping`, `uninterruptible`, or `total` | `tid` |
+| `--sort` | Sort by `tid`, `comm`, `running`, `sleeping`, `uninterruptible`, `on_cpu`, `runnable`, `wakeup_latency`, or `total` | `tid` |
 | `-o`, `--output` | Output format: `table` or `json` | `table` |
 | `--show-idle` | Include threads observed only in the idle state | disabled |
 | `--no-header` | Suppress table headers | disabled |
 
-The sampling interval must be shorter than the report interval. Shorter
-sampling intervals can capture more transitions, but they also add overhead.
+For `proc`, the sampling interval must be shorter than the report interval.
+Shorter sampling intervals can capture more transitions, but they also add
+overhead. The `ebpf` backend has no sampling cadence.
 
 ## JSON Lines output
 
 Use JSON Lines when piping data into tools such as `jq` or saving it for later:
 
 ```bash
-tsastat -p 1234 --sample 10ms --interval 1s --count 10 \
+sudo tsastat -p 1234 --backend ebpf --interval 1s --count 10 \
   --output json > thread-states.jsonl
 ```
 
 Each line represents one reporting interval:
 
 ```json
-{"timestamp":"2026-05-08T12:01:01Z","interval_start":"2026-05-08T12:01:00Z","interval_end":"2026-05-08T12:01:01Z","pid":1234,"backend":"proc","interval_ms":1000,"sample_interval_ms":10,"quality":{"sampling_method":"procfs_midpoint","snapshot_count":101,"max_scan_duration_ms":1,"max_sample_gap_ms":12,"missed_transitions_possible":true,"schedstat_available":true,"schedstat_thread_count":1,"schedstat_counter_resets":0},"threads":[{"tid":1235,"start_time_ticks":987654,"comm":"worker-1","durations_ms":{"running":120,"sleeping":870,"uninterruptible":10,"stopped":0,"tracing_stop":0,"zombie":0,"dead":0,"idle":0,"unknown":0},"percent":{"running":12,"sleeping":87,"uninterruptible":1,"unknown":0},"quality":{"tracked_ms":1000,"samples":100,"max_sample_gap_ms":12,"detected_transitions":2,"detected_transition_uncertainty_ms":10},"scheduler":{"available":true,"source":"proc_schedstat","counter_deltas_exact_between_reads":true,"window_allocation":"proportional_by_wall_time","on_cpu_ms":115,"runqueue_wait_ms":5,"timeslices":16,"observed_ms":1000,"on_cpu_percent":11.5,"runqueue_wait_percent":0.5,"sample_pairs":100,"max_sample_gap_ms":12,"counter_resets":0}}]}
+{"timestamp":"2026-05-08T12:01:01Z","interval_start":"2026-05-08T12:01:00Z","interval_end":"2026-05-08T12:01:01Z","pid":1234,"backend":"ebpf","interval_ms":1000,"sample_interval_ms":0,"quality":{"sampling_method":"ebpf_sched_events","snapshot_count":0,"max_scan_duration_ms":0,"max_sample_gap_ms":0,"missed_transitions_possible":false,"schedstat_available":false,"schedstat_thread_count":0,"schedstat_counter_resets":0,"scheduler_event_timeline":true,"scheduler_event_count":83,"scheduler_lost_events_total":0,"scheduler_late_events":0,"scheduler_incomplete_wakeups":0,"initialization_races":0,"clock_calibration_uncertainty_ns":180},"threads":[{"tid":1235,"start_time_ticks":0,"start_time_ns":98765500000,"comm":"worker-1","durations_ms":{"running":240,"sleeping":750,"uninterruptible":10,"stopped":0,"tracing_stop":0,"zombie":0,"dead":0,"idle":0,"unknown":0},"percent":{"running":24,"sleeping":75,"uninterruptible":1,"unknown":0},"quality":{"tracked_ms":1000,"samples":0,"max_sample_gap_ms":0,"detected_transitions":0,"detected_transition_uncertainty_ms":0},"scheduler":{"available":true,"source":"ebpf_sched_events","counter_deltas_exact_between_reads":false,"event_timed":true,"window_allocation":"exact_event_timestamps","on_cpu_ms":210,"runqueue_wait_ms":30,"timeslices":28,"observed_ms":1000,"on_cpu_percent":21,"runqueue_wait_percent":3,"sample_pairs":0,"max_sample_gap_ms":0,"counter_resets":0,"event_count":83,"wakeup_count":12,"wakeup_latency_total_us":492,"wakeup_latency_avg_us":41,"wakeup_latency_max_us":115,"incomplete_wakeup_count":0}}]}
 ```
 
-`CPU_ms`, `RQ_ms`, and `SLICES` come from differences of the cumulative
-`/proc/<pid>/task/<tid>/schedstat` counters. `SS_OBS_ms` is the wall-clock
-coverage of valid counter pairs. These fields distinguish actual on-CPU time
-from time spent runnable but waiting for a CPU.
+For `ebpf`, `CPU_ms` is time between switch-in and switch-out, `RQ_ms` is time
+runnable but not on a CPU, and `SLICES` counts switch-ins. `WAKE_AVG_us` and
+`WAKE_MAX_us` describe latency from a successful wakeup to the next switch-in.
+`SCHED_OBS_ms` is the event-timeline coverage. `scheduler_lost_events_total`,
+`scheduler_late_events`, and `incomplete_wakeup_count` must all be considered
+when judging completeness.
+
+For `proc`, `CPU_ms`, `RQ_ms`, and `SLICES` come from differences of cumulative
+`/proc/<pid>/task/<tid>/schedstat` counters. `SCHED_OBS_ms` is the wall-clock
+coverage of valid counter pairs.
 
 `GAP_ms` is the largest actual gap between observations affecting the row.
 `UNCERT_ms` is the accumulated per-window timing ambiguity for state changes
@@ -153,6 +180,41 @@ not be attributed to a known state, for example around a disappearing thread.
 thread was actively executing for the entire attributed duration.
 
 ## Accuracy and limitations
+
+### eBPF backend
+
+The embedded CO-RE programs attach to `tp_btf/sched_switch`,
+`tp_btf/sched_wakeup`, and `tp_btf/sched_wakeup_new`. Every event is filtered
+in-kernel by `task_struct.tgid`, so threads created after startup are included
+without a userspace TID polling race.
+
+The event state machine applies these rules:
+
+- switch-in starts `on_cpu` time and one timeslice;
+- a preempted or otherwise runnable switch-out starts `runnable` time;
+- an interruptible switch-out starts `sleeping` time;
+- an uninterruptible switch-out starts `D` time;
+- a successful wakeup ends sleep or D-state and starts runnable time;
+- wakeup latency ends at the next switch-in and excludes preemption-only
+  runqueue waits.
+
+Event timestamps are converted from kernel monotonic time using a bracketed
+userspace clock calibration whose uncertainty is reported in nanoseconds.
+Segments are split at exact fixed report boundaries. Before emitting a window,
+the collector flushes the shared BPF ring buffer to establish a userspace
+watermark. A kernel counter records failed ring-buffer reservations.
+
+Limitations are explicit:
+
+- a non-zero lost-event counter means transitions may be missing;
+- events decoded after their report window are rejected and counted as late;
+- the initial proc scan is not atomic with scheduler events;
+- an initial proc `R` state is reported as `unknown` until the first scheduler
+  event proves whether the thread is on-CPU or merely runnable;
+- D-state means uninterruptible sleep and does not by itself prove I/O wait;
+- wakeup latency is scheduler latency, not end-to-end application latency.
+
+### proc backend
 
 The procfs backend reads `/proc/<pid>/task/<tid>/stat` repeatedly. Each read is
 timestamped near its midpoint and the complete scan records its start and end.
@@ -191,16 +253,13 @@ Consequences of this approach:
 - new threads are tracked from their first observation;
 - percentages describe sampled state, not exact on-CPU time.
 
-Use scheduler tracing with `perf`, ftrace, or eBPF when exact event timing is
-required.
-
 ## Backends
 
 | Backend | Status | Semantics |
 | --- | --- | --- |
 | `proc` | Available | Sampled state plus schedstat scheduler-counter deltas when available |
 | `taskstats` | Planned | Linux Delay Accounting counters |
-| `ebpf` | Planned | Event-driven scheduler timeline |
+| `ebpf` | Available on supported Linux kernels | Event-timed on-CPU, runnable, sleep, D-state, and wakeup latency |
 
 Run `tsastat doctor` to see backend availability and relevant kernel warnings.
 
@@ -221,8 +280,17 @@ The backend interface is deliberately small:
 type Backend interface {
     Name() string
     Capabilities() model.BackendCapabilities
-    Snapshot(ctx context.Context, pid int) (model.ThreadSnapshot, error)
     Close() error
+}
+
+type SnapshotBackend interface {
+    Backend
+    Snapshot(ctx context.Context, pid int) (model.ThreadSnapshot, error)
+}
+
+type SchedulerEventBackend interface {
+    Backend
+    OpenSchedulerEvents(ctx context.Context, pid int) (model.SchedulerEventStream, error)
 }
 ```
 
@@ -256,9 +324,6 @@ build provenance attestations. Release binaries report their version through
 - CSV output;
 - multi-process and process-tree monitoring;
 - experimental taskstats support;
-- eBPF scheduler-event tracing;
-- event-timed runnable wait and on-CPU time through eBPF;
-- context-switch and wakeup counters;
 - optional TUI frontend.
 
 ## License

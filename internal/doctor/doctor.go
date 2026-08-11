@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/BogdanDolia/tsastat/internal/backend/ebpf"
@@ -93,15 +94,70 @@ func writeTaskstats(w io.Writer) {
 
 func writeEBPF(w io.Writer) {
 	fmt.Fprintln(w, "ebpf backend:")
-	fmt.Fprintln(w, "  status: NOT IMPLEMENTED")
-	fmt.Fprintln(w, "  warning: eBPF backend will require scheduler tracepoints and appropriate capabilities")
+	if runtime.GOOS != "linux" {
+		fmt.Fprintln(w, "  status: NOT OK")
+		fmt.Fprintf(w, "  reason: eBPF scheduler tracing requires Linux; current platform is %s/%s\n", runtime.GOOS, runtime.GOARCH)
+		return
+	}
+
+	releaseData, releaseErr := os.ReadFile("/proc/sys/kernel/osrelease")
+	release := strings.TrimSpace(string(releaseData))
+	kernelSupported := false
+	if releaseErr == nil {
+		fmt.Fprintf(w, "  kernel: %s\n", release)
+		major, minor, ok := parseKernelVersion(release)
+		kernelSupported = ok && (major > 6 || major == 6 && minor >= 1)
+		if !kernelSupported {
+			fmt.Fprintln(w, "  warning: upstream Linux 6.1 or newer is required for the sched_switch prev_state contract")
+		}
+	} else {
+		fmt.Fprintf(w, "  kernel: unavailable (%v)\n", releaseErr)
+	}
+
+	btfAvailable := false
+	if stat, err := os.Stat("/sys/kernel/btf/vmlinux"); err == nil && !stat.IsDir() {
+		btfAvailable = true
+		fmt.Fprintln(w, "  kernel BTF: available")
+	} else if err != nil {
+		fmt.Fprintf(w, "  kernel BTF: unavailable (%v)\n", err)
+	}
+	if btfAvailable && kernelSupported {
+		fmt.Fprintln(w, "  status: prerequisites detected")
+		fmt.Fprintln(w, "  reason: the embedded CO-RE programs can be attempted on this kernel")
+	} else {
+		fmt.Fprintln(w, "  status: NOT OK")
+		if !btfAvailable {
+			fmt.Fprintln(w, "  reason: /sys/kernel/btf/vmlinux is required for tp_btf CO-RE relocation")
+		} else {
+			fmt.Fprintln(w, "  reason: the detected upstream kernel version is older than 6.1")
+		}
+	}
+
 	for _, warning := range ebpf.Capabilities().Warnings {
 		fmt.Fprintf(w, "  warning: %s\n", warning)
 	}
 	fmt.Fprintf(w, "  euid: %d\n", os.Geteuid())
-	if data, err := os.ReadFile("/proc/sys/kernel/osrelease"); err == nil {
-		fmt.Fprintf(w, "  kernel: %s\n", strings.TrimSpace(string(data)))
-	} else {
-		fmt.Fprintf(w, "  kernel: unavailable on %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	if data, err := os.ReadFile("/proc/sys/kernel/unprivileged_bpf_disabled"); err == nil {
+		fmt.Fprintf(w, "  kernel.unprivileged_bpf_disabled: %s\n", strings.TrimSpace(string(data)))
 	}
+}
+
+func parseKernelVersion(release string) (int, int, bool) {
+	parts := strings.SplitN(release, ".", 3)
+	if len(parts) < 2 {
+		return 0, 0, false
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, false
+	}
+	minorText := parts[1]
+	if index := strings.IndexFunc(minorText, func(r rune) bool { return r < '0' || r > '9' }); index >= 0 {
+		minorText = minorText[:index]
+	}
+	minor, err := strconv.Atoi(minorText)
+	if err != nil {
+		return 0, 0, false
+	}
+	return major, minor, true
 }

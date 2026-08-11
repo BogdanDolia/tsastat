@@ -54,6 +54,12 @@ func FilterAndSort(stats []model.ThreadIntervalStats, opts FilterSortOptions) ([
 		sortByDuration(filtered, model.StateSleeping)
 	case "uninterruptible":
 		sortByDuration(filtered, model.StateUninterruptible)
+	case "on_cpu":
+		sortByMetric(filtered, func(stat model.ThreadIntervalStats) int64 { return int64(stat.OnCPU) })
+	case "runnable":
+		sortByMetric(filtered, func(stat model.ThreadIntervalStats) int64 { return int64(stat.RunqueueWait) })
+	case "wakeup_latency":
+		sortByMetric(filtered, func(stat model.ThreadIntervalStats) int64 { return int64(stat.WakeupLatencyMax) })
 	case "total":
 		sort.SliceStable(filtered, func(i, j int) bool {
 			if filtered[i].TotalObserved == filtered[j].TotalObserved {
@@ -79,9 +85,13 @@ func matchComm(comm, pattern string) bool {
 }
 
 func sortByDuration(stats []model.ThreadIntervalStats, state model.ThreadState) {
+	sortByMetric(stats, func(stat model.ThreadIntervalStats) int64 { return int64(stat.Duration(state)) })
+}
+
+func sortByMetric(stats []model.ThreadIntervalStats, value func(model.ThreadIntervalStats) int64) {
 	sort.SliceStable(stats, func(i, j int) bool {
-		left := stats[i].Duration(state)
-		right := stats[j].Duration(state)
+		left := value(stats[i])
+		right := value(stats[j])
 		if left == right {
 			return stats[i].TID < stats[j].TID
 		}

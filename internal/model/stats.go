@@ -3,10 +3,11 @@ package model
 import "time"
 
 type ThreadIntervalStats struct {
-	PID            int
-	TID            int
-	StartTimeTicks uint64
-	Comm           string
+	PID                  int
+	TID                  int
+	StartTimeTicks       uint64
+	StartTimeNanoseconds uint64
+	Comm                 string
 
 	IntervalStart time.Time
 	IntervalEnd   time.Time
@@ -28,6 +29,14 @@ type ThreadIntervalStats struct {
 	SchedstatSamplePairs   int
 	SchedstatMaxSampleGap  time.Duration
 	SchedstatCounterResets int
+
+	SchedulerSource       string
+	SchedulerObserved     time.Duration
+	SchedulerEventCount   int
+	WakeupCount           int
+	WakeupLatencyTotal    time.Duration
+	WakeupLatencyMax      time.Duration
+	IncompleteWakeupCount int
 }
 
 func (s ThreadIntervalStats) Duration(state ThreadState) time.Duration {
@@ -56,29 +65,56 @@ func (s ThreadIntervalStats) SchedstatAvailable() bool {
 	return s.SchedstatSamplePairs > 0
 }
 
+func (s ThreadIntervalStats) SchedulerAvailable() bool {
+	return s.SchedulerSource != ""
+}
+
+func (s ThreadIntervalStats) schedulerObserved() time.Duration {
+	if s.SchedulerObserved > 0 {
+		return s.SchedulerObserved
+	}
+	return s.SchedstatObserved
+}
+
 func (s ThreadIntervalStats) OnCPUPercent() float64 {
-	if s.SchedstatObserved <= 0 {
+	observed := s.schedulerObserved()
+	if observed <= 0 {
 		return 0
 	}
-	return float64(s.OnCPU) * 100 / float64(s.SchedstatObserved)
+	return float64(s.OnCPU) * 100 / float64(observed)
 }
 
 func (s ThreadIntervalStats) RunqueueWaitPercent() float64 {
-	if s.SchedstatObserved <= 0 {
+	observed := s.schedulerObserved()
+	if observed <= 0 {
 		return 0
 	}
-	return float64(s.RunqueueWait) * 100 / float64(s.SchedstatObserved)
+	return float64(s.RunqueueWait) * 100 / float64(observed)
+}
+
+func (s ThreadIntervalStats) AverageWakeupLatency() time.Duration {
+	if s.WakeupCount == 0 {
+		return 0
+	}
+	return s.WakeupLatencyTotal / time.Duration(s.WakeupCount)
 }
 
 type IntervalQuality struct {
-	SamplingMethod            string
-	SnapshotCount             int
-	MaxScanDuration           time.Duration
-	MaxSampleGap              time.Duration
-	MissedTransitionsPossible bool
-	SchedstatAvailable        bool
-	SchedstatThreadCount      int
-	SchedstatCounterResets    int
+	SamplingMethod              string
+	SnapshotCount               int
+	MaxScanDuration             time.Duration
+	MaxSampleGap                time.Duration
+	MissedTransitionsPossible   bool
+	SchedstatAvailable          bool
+	SchedstatThreadCount        int
+	SchedstatCounterResets      int
+	SchedulerEventTimeline      bool
+	SchedulerEventCount         int
+	SchedulerLostEventsTotal    uint64
+	SchedulerLateEvents         int
+	SchedulerIncompleteWakeups  int
+	InitializationRaces         int
+	ClockCalibrationUncertainty time.Duration
 }
 
 type IntervalReport struct {

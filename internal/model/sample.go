@@ -3,24 +3,29 @@ package model
 import "time"
 
 type ThreadIdentity struct {
-	TID            int
-	StartTimeTicks uint64
+	TID                  int
+	StartTimeTicks       uint64
+	StartTimeNanoseconds uint64
 }
 
 type ThreadSample struct {
 	PID            int
 	TID            int
 	StartTimeTicks uint64
-	Comm           string
-	State          ThreadState
-	Timestamp      time.Time
-	Schedstat      SchedstatCounters
+	// StartTimeNanoseconds is the kernel task start_time used by the eBPF
+	// backend as a stable identity. Proc snapshots leave it at zero.
+	StartTimeNanoseconds uint64
+	Comm                 string
+	State                ThreadState
+	Timestamp            time.Time
+	Schedstat            SchedstatCounters
 }
 
 func (s ThreadSample) Identity() ThreadIdentity {
 	return ThreadIdentity{
-		TID:            s.TID,
-		StartTimeTicks: s.StartTimeTicks,
+		TID:                  s.TID,
+		StartTimeTicks:       s.StartTimeTicks,
+		StartTimeNanoseconds: s.StartTimeNanoseconds,
 	}
 }
 

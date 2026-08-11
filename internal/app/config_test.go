@@ -39,3 +39,13 @@ func TestParseConfigRejectsSampleIntervalNotShorterThanReport(t *testing.T) {
 		t.Fatalf("error = %q, want shorter-than validation", err)
 	}
 }
+
+func TestParseConfigIgnoresSampleCadenceForEBPFBackend(t *testing.T) {
+	cfg, err := parseConfig([]string{"-p", "123", "--backend", "ebpf", "--interval", "1s", "--sample", "2s"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseConfig returned error: %v", err)
+	}
+	if cfg.Backend != "ebpf" || cfg.SampleInterval != 2*time.Second {
+		t.Fatalf("config = %#v", cfg)
+	}
+}

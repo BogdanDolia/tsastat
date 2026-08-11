@@ -43,6 +43,40 @@ func TestCollectorSamplesRepeatedlyBeforeFixedReport(t *testing.T) {
 	}
 }
 
+func TestCollectorUsesSchedulerEventStream(t *testing.T) {
+	origin := time.Now().Add(-20 * time.Millisecond)
+	stream := &fakeEventStream{
+		initial: eventInitialSnapshot(origin, model.StateSleeping),
+		events:  make(chan model.SchedulerEvent, 1),
+		errors:  make(chan error),
+		flushed: make(chan struct{}, 1),
+		lost:    2,
+		pending: []model.SchedulerEvent{
+			schedulerEvent(origin.Add(5*time.Millisecond), model.SchedulerEventWakeup, model.SchedulerStateRunnable),
+		},
+	}
+	b := &fakeEventBackend{stream: stream}
+	c := New(b, 10, 10*time.Millisecond, time.Second)
+
+	var got model.IntervalReport
+	if err := c.Run(context.Background(), 1, func(report model.IntervalReport) error {
+		got = report
+		return nil
+	}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !stream.closed {
+		t.Fatal("event stream was not closed")
+	}
+	if !got.Quality.SchedulerEventTimeline || got.Quality.SchedulerLostEventsTotal != 2 {
+		t.Fatalf("event quality = %#v", got.Quality)
+	}
+	if len(got.Threads) != 1 || got.Threads[0].Duration(model.StateSleeping) != 5*time.Millisecond ||
+		got.Threads[0].RunqueueWait != 5*time.Millisecond {
+		t.Fatalf("event threads = %#v", got.Threads)
+	}
+}
+
 type sequenceBackend struct {
 	snapshots []model.ThreadSnapshot
 	calls     int
@@ -66,5 +100,73 @@ func (b *sequenceBackend) Snapshot(context.Context, int) (model.ThreadSnapshot, 
 }
 
 func (b *sequenceBackend) Close() error {
+	return nil
+}
+
+type fakeEventBackend struct {
+	stream *fakeEventStream
+}
+
+func (b *fakeEventBackend) Name() string {
+	return "event"
+}
+
+func (b *fakeEventBackend) Capabilities() model.BackendCapabilities {
+	return model.BackendCapabilities{SupportsSchedulerEvents: true}
+}
+
+func (b *fakeEventBackend) OpenSchedulerEvents(context.Context, int) (model.SchedulerEventStream, error) {
+	return b.stream, nil
+}
+
+func (b *fakeEventBackend) Close() error {
+	return nil
+}
+
+type fakeEventStream struct {
+	initial model.ThreadSnapshot
+	events  chan model.SchedulerEvent
+	errors  chan error
+	flushed chan struct{}
+	lost    uint64
+	pending []model.SchedulerEvent
+	closed  bool
+}
+
+func (s *fakeEventStream) InitialSnapshot() model.ThreadSnapshot {
+	return s.initial
+}
+
+func (s *fakeEventStream) Events() <-chan model.SchedulerEvent {
+	return s.events
+}
+
+func (s *fakeEventStream) Errors() <-chan error {
+	return s.errors
+}
+
+func (s *fakeEventStream) Flush() error {
+	for _, event := range s.pending {
+		s.events <- event
+	}
+	s.pending = nil
+	s.flushed <- struct{}{}
+	return nil
+}
+
+func (s *fakeEventStream) Flushed() <-chan struct{} {
+	return s.flushed
+}
+
+func (s *fakeEventStream) LostEvents() uint64 {
+	return s.lost
+}
+
+func (s *fakeEventStream) ClockCalibrationUncertainty() time.Duration {
+	return 0
+}
+
+func (s *fakeEventStream) Close() error {
+	s.closed = true
 	return nil
 }

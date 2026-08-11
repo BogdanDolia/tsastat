@@ -27,12 +27,12 @@ func TestRegistry(t *testing.T) {
 	})
 
 	t.Run("ebpf", func(t *testing.T) {
-		_, err := New("ebpf")
-		if !errors.Is(err, ErrNotImplemented) {
-			t.Fatalf("New(ebpf) error = %v, want ErrNotImplemented", err)
+		got, err := New("ebpf")
+		if err != nil {
+			t.Fatalf("New(ebpf) returned error: %v", err)
 		}
-		if got, want := err.Error(), `backend "ebpf" is not implemented yet`; got != want {
-			t.Fatalf("error = %q, want %q", got, want)
+		if got.Name() != "ebpf" || !got.Capabilities().SupportsSchedulerEvents {
+			t.Fatalf("ebpf backend = %#v", got)
 		}
 	})
 

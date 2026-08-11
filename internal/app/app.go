@@ -51,13 +51,17 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	defer b.Close()
 
+	reportedSampleInterval := cfg.SampleInterval
+	if b.Capabilities().SupportsSchedulerEvents {
+		reportedSampleInterval = 0
+	}
 	renderer, err := output.NewRenderer(output.RendererOptions{
 		Format:         cfg.Output,
 		Writer:         stdout,
 		PID:            cfg.PID,
 		Backend:        b.Name(),
 		Interval:       cfg.Interval,
-		SampleInterval: cfg.SampleInterval,
+		SampleInterval: reportedSampleInterval,
 		NoHeader:       cfg.NoHeader,
 	})
 	if err != nil {
@@ -66,7 +70,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if cfg.Output == "table" && !cfg.NoHeader {
-		fmt.Fprintf(stdout, "tsastat: pid=%d backend=%s interval=%s sample=%s\n\n", cfg.PID, b.Name(), cfg.Interval, cfg.SampleInterval)
+		if b.Capabilities().SupportsSchedulerEvents {
+			fmt.Fprintf(stdout, "tsastat: pid=%d backend=%s interval=%s mode=event-driven\n\n", cfg.PID, b.Name(), cfg.Interval)
+		} else {
+			fmt.Fprintf(stdout, "tsastat: pid=%d backend=%s interval=%s sample=%s\n\n", cfg.PID, b.Name(), cfg.Interval, cfg.SampleInterval)
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
