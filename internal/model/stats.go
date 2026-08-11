@@ -37,6 +37,39 @@ type ThreadIntervalStats struct {
 	WakeupLatencyTotal    time.Duration
 	WakeupLatencyMax      time.Duration
 	IncompleteWakeupCount int
+
+	DelayVersion                uint16
+	DelayAccountingEnabled      bool
+	DelayAccountingEnabledKnown bool
+	DelayObserved               time.Duration
+	DelaySamplePairs            int
+	DelayMaxSampleGap           time.Duration
+	DelayCounterResets          int
+	Delays                      DelayIntervalCounters
+}
+
+type DelayIntervalCounter struct {
+	Available bool
+	Count     uint64
+	Total     time.Duration
+}
+
+func (c DelayIntervalCounter) Average() time.Duration {
+	if c.Count == 0 || c.Total <= 0 {
+		return 0
+	}
+	return time.Duration(uint64(c.Total) / c.Count)
+}
+
+type DelayIntervalCounters struct {
+	CPU              DelayIntervalCounter
+	BlockIO          DelayIntervalCounter
+	SwapIn           DelayIntervalCounter
+	Reclaim          DelayIntervalCounter
+	Thrashing        DelayIntervalCounter
+	Compaction       DelayIntervalCounter
+	WriteProtectCopy DelayIntervalCounter
+	IRQ              DelayIntervalCounter
 }
 
 func (s ThreadIntervalStats) Duration(state ThreadState) time.Duration {
@@ -99,7 +132,14 @@ func (s ThreadIntervalStats) AverageWakeupLatency() time.Duration {
 	return s.WakeupLatencyTotal / time.Duration(s.WakeupCount)
 }
 
+func (s ThreadIntervalStats) DelayCountersAvailable() bool {
+	return s.DelaySamplePairs > 0
+}
+
 type IntervalQuality struct {
+	ActiveSources               []string
+	UnavailableSources          []string
+	HybridIdentityMismatches    int
 	SamplingMethod              string
 	SnapshotCount               int
 	MaxScanDuration             time.Duration
@@ -115,6 +155,13 @@ type IntervalQuality struct {
 	SchedulerIncompleteWakeups  int
 	InitializationRaces         int
 	ClockCalibrationUncertainty time.Duration
+	TaskstatsAvailable          bool
+	TaskstatsThreadCount        int
+	TaskstatsVersionMin         uint16
+	TaskstatsVersionMax         uint16
+	TaskstatsCounterResets      int
+	DelayAccountingEnabled      bool
+	DelayAccountingEnabledKnown bool
 }
 
 type IntervalReport struct {

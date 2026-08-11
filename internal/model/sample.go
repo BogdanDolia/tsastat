@@ -19,6 +19,7 @@ type ThreadSample struct {
 	State                ThreadState
 	Timestamp            time.Time
 	Schedstat            SchedstatCounters
+	Delays               DelayCounters
 }
 
 func (s ThreadSample) Identity() ThreadIdentity {
@@ -30,9 +31,10 @@ func (s ThreadSample) Identity() ThreadIdentity {
 }
 
 type ThreadSnapshot struct {
-	Samples    []ThreadSample
-	StartedAt  time.Time
-	FinishedAt time.Time
+	Samples        []ThreadSample
+	StartedAt      time.Time
+	FinishedAt     time.Time
+	SamplingMethod string
 }
 
 type SchedstatCounters struct {
@@ -40,4 +42,25 @@ type SchedstatCounters struct {
 	OnCPUNanoseconds    uint64
 	RunqueueNanoseconds uint64
 	Timeslices          uint64
+}
+
+type DelayCounter struct {
+	Available        bool
+	Count            uint64
+	TotalNanoseconds uint64
+}
+
+type DelayCounters struct {
+	Available              bool
+	Version                uint16
+	AccountingEnabled      bool
+	AccountingEnabledKnown bool
+	CPU                    DelayCounter
+	BlockIO                DelayCounter
+	SwapIn                 DelayCounter
+	Reclaim                DelayCounter
+	Thrashing              DelayCounter
+	Compaction             DelayCounter
+	WriteProtectCopy       DelayCounter
+	IRQ                    DelayCounter
 }

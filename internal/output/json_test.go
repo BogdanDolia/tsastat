@@ -150,3 +150,106 @@ func TestJSONOutputReportsEventTimedSchedulerMetrics(t *testing.T) {
 		t.Fatalf("wakeup metrics = %#v", scheduler)
 	}
 }
+
+func TestJSONOutputReportsTaskstatsDelayReasonsAndQuality(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := NewJSONRenderer(&buf, 123, "taskstats", time.Second, 10*time.Millisecond)
+	err := renderer.Render(model.IntervalReport{
+		IntervalStart: time.Unix(0, 0),
+		IntervalEnd:   time.Unix(1, 0),
+		Quality: model.IntervalQuality{
+			SamplingMethod:              "taskstats_counters_procfs_midpoint",
+			TaskstatsAvailable:          true,
+			TaskstatsThreadCount:        1,
+			TaskstatsVersionMin:         14,
+			TaskstatsVersionMax:         14,
+			TaskstatsCounterResets:      2,
+			DelayAccountingEnabled:      true,
+			DelayAccountingEnabledKnown: true,
+		},
+		Threads: []model.ThreadIntervalStats{{
+			PID:                         123,
+			TID:                         124,
+			Comm:                        "worker",
+			IntervalStart:               time.Unix(0, 0),
+			IntervalEnd:                 time.Unix(1, 0),
+			Durations:                   map[model.ThreadState]time.Duration{model.StateSleeping: time.Second},
+			TotalObserved:               time.Second,
+			DelayVersion:                14,
+			DelayAccountingEnabled:      true,
+			DelayAccountingEnabledKnown: true,
+			DelayObserved:               time.Second,
+			DelaySamplePairs:            100,
+			DelayMaxSampleGap:           12 * time.Millisecond,
+			DelayCounterResets:          2,
+			Delays: model.DelayIntervalCounters{
+				CPU:              model.DelayIntervalCounter{Available: true, Count: 2, Total: 300 * time.Microsecond},
+				BlockIO:          model.DelayIntervalCounter{Available: true, Count: 1, Total: 2 * time.Millisecond},
+				SwapIn:           model.DelayIntervalCounter{Available: true},
+				Reclaim:          model.DelayIntervalCounter{Available: true, Count: 1, Total: 500 * time.Microsecond},
+				Thrashing:        model.DelayIntervalCounter{Available: true},
+				Compaction:       model.DelayIntervalCounter{Available: true},
+				WriteProtectCopy: model.DelayIntervalCounter{Available: true},
+				IRQ:              model.DelayIntervalCounter{Available: true, Count: 3, Total: 90 * time.Microsecond},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Render returned error: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &decoded); err != nil {
+		t.Fatalf("JSON line is invalid: %v\n%s", err, buf.String())
+	}
+	quality := decoded["quality"].(map[string]any)
+	if quality["taskstats_available"] != true || quality["taskstats_version_min"] != float64(14) ||
+		quality["taskstats_counter_resets"] != float64(2) || quality["kernel_task_delayacct_enabled"] != true {
+		t.Fatalf("taskstats quality = %#v", quality)
+	}
+	thread := decoded["threads"].([]any)[0].(map[string]any)
+	delays := thread["delays"].(map[string]any)
+	if delays["source"] != "linux_taskstats_delayacct" || delays["version"] != float64(14) ||
+		delays["window_allocation"] != "proportional_by_wall_time" || delays["field_pairs_atomic"] != false {
+		t.Fatalf("delay contract = %#v", delays)
+	}
+	cpu := delays["cpu"].(map[string]any)
+	irq := delays["irq"].(map[string]any)
+	if cpu["count"] != float64(2) || cpu["total_ns"] != float64(300000) || cpu["average_ns"] != float64(150000) {
+		t.Fatalf("cpu delay = %#v", cpu)
+	}
+	if irq["count"] != float64(3) || irq["total_ns"] != float64(90000) || irq["average_ns"] != float64(30000) {
+		t.Fatalf("irq delay = %#v", irq)
+	}
+}
+
+func TestJSONOutputReportsHybridSourceSelection(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := NewJSONRenderer(&buf, 123, "auto", time.Second, 10*time.Millisecond)
+	err := renderer.Render(model.IntervalReport{
+		IntervalStart: time.Unix(0, 0),
+		IntervalEnd:   time.Unix(1, 0),
+		Quality: model.IntervalQuality{
+			ActiveSources:            []string{"ebpf", "proc", "taskstats"},
+			UnavailableSources:       []string{"optional_source"},
+			HybridIdentityMismatches: 2,
+			SamplingMethod:           "ebpf_sched_events+taskstats_counters",
+			SchedulerEventTimeline:   true,
+			TaskstatsAvailable:       true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Render returned error: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &decoded); err != nil {
+		t.Fatalf("JSON line is invalid: %v", err)
+	}
+	quality := decoded["quality"].(map[string]any)
+	active := quality["active_sources"].([]any)
+	unavailable := quality["unavailable_sources"].([]any)
+	if len(active) != 3 || len(unavailable) != 1 || quality["hybrid_identity_mismatches"] != float64(2) {
+		t.Fatalf("hybrid quality = %#v", quality)
+	}
+}

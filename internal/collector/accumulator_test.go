@@ -143,6 +143,90 @@ func TestAccumulatorRejectsSchedstatCounterReset(t *testing.T) {
 	}
 }
 
+func TestAccumulatorUsesTaskstatsDelayCounterDeltas(t *testing.T) {
+	base := time.Unix(0, 0)
+	acc := NewAccumulator(time.Second)
+	previous := delaySample(1, base, 14, true, 1, 100*time.Millisecond)
+	current := delaySample(1, base.Add(time.Second), 14, true, 3, 400*time.Millisecond)
+
+	acc.Observe(taskstatsSnapshot(previous, base))
+	reports := acc.Observe(taskstatsSnapshot(current, base.Add(time.Second)))
+	stat := onlyThread(t, reports)
+
+	if !stat.DelayCountersAvailable() || stat.DelayVersion != 14 || !stat.DelayAccountingEnabled {
+		t.Fatalf("delay metadata = %#v", stat)
+	}
+	for name, counter := range map[string]model.DelayIntervalCounter{
+		"cpu":        stat.Delays.CPU,
+		"block_io":   stat.Delays.BlockIO,
+		"swap_in":    stat.Delays.SwapIn,
+		"reclaim":    stat.Delays.Reclaim,
+		"thrashing":  stat.Delays.Thrashing,
+		"compaction": stat.Delays.Compaction,
+		"wpcopy":     stat.Delays.WriteProtectCopy,
+		"irq":        stat.Delays.IRQ,
+	} {
+		if !counter.Available || counter.Count != 2 || counter.Total != 300*time.Millisecond {
+			t.Fatalf("%s counter = %#v, want count 2 and 300ms", name, counter)
+		}
+	}
+	quality := reports[0].Quality
+	if quality.SamplingMethod != "taskstats_counters_procfs_midpoint" || !quality.TaskstatsAvailable ||
+		quality.TaskstatsThreadCount != 1 || quality.TaskstatsVersionMin != 14 || quality.TaskstatsVersionMax != 14 ||
+		!quality.DelayAccountingEnabledKnown || !quality.DelayAccountingEnabled {
+		t.Fatalf("taskstats quality = %#v", quality)
+	}
+}
+
+func TestAccumulatorCanAlignCountersToExternalOrigin(t *testing.T) {
+	base := time.Unix(0, 0)
+	acc := NewAccumulatorAt(10*time.Millisecond, base)
+	acc.Observe(taskstatsSnapshot(delaySample(1, base.Add(time.Millisecond), 14, true, 0, 0), base.Add(time.Millisecond)))
+	reports := acc.Observe(taskstatsSnapshot(delaySample(1, base.Add(11*time.Millisecond), 14, true, 10, 100*time.Nanosecond), base.Add(11*time.Millisecond)))
+
+	stat := onlyThread(t, reports)
+	assertWindow(t, reports[0], base, base.Add(10*time.Millisecond))
+	if stat.Delays.CPU.Count != 9 || stat.Delays.CPU.Total != 90*time.Nanosecond {
+		t.Fatalf("aligned CPU delays = %#v", stat.Delays.CPU)
+	}
+}
+
+func TestAccumulatorConservesTaskstatsDelayAcrossWindowBoundary(t *testing.T) {
+	base := time.Unix(0, 0)
+	acc := NewAccumulator(time.Second)
+	acc.Observe(taskstatsSnapshot(delaySample(1, base, 14, true, 0, 0), base))
+	acc.Observe(taskstatsSnapshot(delaySample(1, base.Add(900*time.Millisecond), 14, true, 0, 0), base.Add(900*time.Millisecond)))
+	first := acc.Observe(taskstatsSnapshot(delaySample(1, base.Add(1100*time.Millisecond), 14, true, 2, 200*time.Millisecond), base.Add(1100*time.Millisecond)))
+	firstStat := onlyThread(t, first)
+	if firstStat.Delays.CPU.Count != 1 || firstStat.Delays.CPU.Total != 100*time.Millisecond {
+		t.Fatalf("first delay allocation = %#v", firstStat.Delays.CPU)
+	}
+
+	second := acc.Observe(taskstatsSnapshot(delaySample(1, base.Add(2*time.Second), 14, true, 2, 200*time.Millisecond), base.Add(2*time.Second)))
+	secondStat := onlyThread(t, second)
+	if secondStat.Delays.CPU.Count != 1 || secondStat.Delays.CPU.Total != 100*time.Millisecond {
+		t.Fatalf("second delay allocation = %#v", secondStat.Delays.CPU)
+	}
+}
+
+func TestAccumulatorRejectsOnlyResetTaskstatsCounter(t *testing.T) {
+	base := time.Unix(0, 0)
+	acc := NewAccumulator(time.Second)
+	previous := delaySample(1, base, 14, false, 5, 500*time.Millisecond)
+	current := delaySample(1, base.Add(time.Second), 14, false, 2, 200*time.Millisecond)
+	current.Delays.BlockIO = model.DelayCounter{Available: true, Count: 7, TotalNanoseconds: uint64((700 * time.Millisecond).Nanoseconds())}
+
+	acc.Observe(taskstatsSnapshot(previous, base))
+	reports := acc.Observe(taskstatsSnapshot(current, base.Add(time.Second)))
+	stat := onlyThread(t, reports)
+	if stat.Delays.CPU.Available || !stat.Delays.BlockIO.Available || stat.Delays.BlockIO.Count != 2 || stat.Delays.BlockIO.Total != 200*time.Millisecond {
+		t.Fatalf("delay counters after reset = %#v", stat.Delays)
+	}
+	if stat.DelayCounterResets != 7 || reports[0].Quality.TaskstatsCounterResets != 7 {
+		t.Fatalf("resets = thread %d interval %d, want 7", stat.DelayCounterResets, reports[0].Quality.TaskstatsCounterResets)
+	}
+}
+
 func TestMultiplyDivideHandlesFullUint64Range(t *testing.T) {
 	const maxUint64 = ^uint64(0)
 	if got, want := multiplyDivide(maxUint64, 1, 2), maxUint64/2; got != want {
@@ -377,6 +461,36 @@ func schedstatSample(
 		OnCPUNanoseconds:    uint64(onCPU.Nanoseconds()),
 		RunqueueNanoseconds: uint64(runqueue.Nanoseconds()),
 		Timeslices:          timeslices,
+	}
+	return sample
+}
+
+func taskstatsSnapshot(sample model.ThreadSample, at time.Time) model.ThreadSnapshot {
+	snapshot := snapshot(sample, at)
+	snapshot.SamplingMethod = "taskstats_counters_procfs_midpoint"
+	return snapshot
+}
+
+func delaySample(tid int, at time.Time, version uint16, enabled bool, count uint64, total time.Duration) model.ThreadSample {
+	sample := sample(tid, 1, "worker", model.StateRunning, at)
+	counter := model.DelayCounter{
+		Available:        true,
+		Count:            count,
+		TotalNanoseconds: uint64(total.Nanoseconds()),
+	}
+	sample.Delays = model.DelayCounters{
+		Available:              true,
+		Version:                version,
+		AccountingEnabled:      enabled,
+		AccountingEnabledKnown: true,
+		CPU:                    counter,
+		BlockIO:                counter,
+		SwapIn:                 counter,
+		Reclaim:                counter,
+		Thrashing:              counter,
+		Compaction:             counter,
+		WriteProtectCopy:       counter,
+		IRQ:                    counter,
 	}
 	return sample
 }

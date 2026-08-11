@@ -52,7 +52,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	defer b.Close()
 
 	reportedSampleInterval := cfg.SampleInterval
-	if b.Capabilities().SupportsSchedulerEvents {
+	capabilities := b.Capabilities()
+	if capabilities.SupportsSchedulerEvents && !capabilities.SupportsDelayCounters {
 		reportedSampleInterval = 0
 	}
 	renderer, err := output.NewRenderer(output.RendererOptions{
@@ -70,7 +71,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if cfg.Output == "table" && !cfg.NoHeader {
-		if b.Capabilities().SupportsSchedulerEvents {
+		if capabilities.SupportsSchedulerEvents && capabilities.SupportsDelayCounters {
+			fmt.Fprintf(stdout, "tsastat: pid=%d backend=%s interval=%s sample=%s mode=hybrid\n\n", cfg.PID, b.Name(), cfg.Interval, cfg.SampleInterval)
+		} else if capabilities.SupportsSchedulerEvents {
 			fmt.Fprintf(stdout, "tsastat: pid=%d backend=%s interval=%s mode=event-driven\n\n", cfg.PID, b.Name(), cfg.Interval)
 		} else {
 			fmt.Fprintf(stdout, "tsastat: pid=%d backend=%s interval=%s sample=%s\n\n", cfg.PID, b.Name(), cfg.Interval, cfg.SampleInterval)

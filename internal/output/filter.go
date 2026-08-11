@@ -60,6 +60,22 @@ func FilterAndSort(stats []model.ThreadIntervalStats, opts FilterSortOptions) ([
 		sortByMetric(filtered, func(stat model.ThreadIntervalStats) int64 { return int64(stat.RunqueueWait) })
 	case "wakeup_latency":
 		sortByMetric(filtered, func(stat model.ThreadIntervalStats) int64 { return int64(stat.WakeupLatencyMax) })
+	case "cpu_delay":
+		sortByDelay(filtered, func(stat model.ThreadIntervalStats) model.DelayIntervalCounter { return stat.Delays.CPU })
+	case "block_io_delay":
+		sortByDelay(filtered, func(stat model.ThreadIntervalStats) model.DelayIntervalCounter { return stat.Delays.BlockIO })
+	case "swap_delay":
+		sortByDelay(filtered, func(stat model.ThreadIntervalStats) model.DelayIntervalCounter { return stat.Delays.SwapIn })
+	case "reclaim_delay":
+		sortByDelay(filtered, func(stat model.ThreadIntervalStats) model.DelayIntervalCounter { return stat.Delays.Reclaim })
+	case "thrashing_delay":
+		sortByDelay(filtered, func(stat model.ThreadIntervalStats) model.DelayIntervalCounter { return stat.Delays.Thrashing })
+	case "compaction_delay":
+		sortByDelay(filtered, func(stat model.ThreadIntervalStats) model.DelayIntervalCounter { return stat.Delays.Compaction })
+	case "wpcopy_delay":
+		sortByDelay(filtered, func(stat model.ThreadIntervalStats) model.DelayIntervalCounter { return stat.Delays.WriteProtectCopy })
+	case "irq_delay":
+		sortByDelay(filtered, func(stat model.ThreadIntervalStats) model.DelayIntervalCounter { return stat.Delays.IRQ })
 	case "total":
 		sort.SliceStable(filtered, func(i, j int) bool {
 			if filtered[i].TotalObserved == filtered[j].TotalObserved {
@@ -72,6 +88,10 @@ func FilterAndSort(stats []model.ThreadIntervalStats, opts FilterSortOptions) ([
 	}
 
 	return filtered, nil
+}
+
+func sortByDelay(stats []model.ThreadIntervalStats, counter func(model.ThreadIntervalStats) model.DelayIntervalCounter) {
+	sortByMetric(stats, func(stat model.ThreadIntervalStats) int64 { return int64(counter(stat).Total) })
 }
 
 func matchComm(comm, pattern string) bool {

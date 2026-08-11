@@ -18,6 +18,7 @@ type intervalWindow struct {
 type Accumulator struct {
 	interval    time.Duration
 	origin      time.Time
+	fixedOrigin bool
 	initialized bool
 	previous    map[model.ThreadIdentity]model.ThreadSample
 	windows     map[int64]*intervalWindow
@@ -30,6 +31,27 @@ type schedstatDelta struct {
 	timeslices          uint64
 }
 
+type delayCounterDelta struct {
+	available        bool
+	count            uint64
+	totalNanoseconds uint64
+}
+
+type delayDelta struct {
+	version                uint16
+	accountingEnabled      bool
+	accountingEnabledKnown bool
+	resets                 int
+	cpu                    delayCounterDelta
+	blockIO                delayCounterDelta
+	swapIn                 delayCounterDelta
+	reclaim                delayCounterDelta
+	thrashing              delayCounterDelta
+	compaction             delayCounterDelta
+	writeProtectCopy       delayCounterDelta
+	irq                    delayCounterDelta
+}
+
 func NewAccumulator(interval time.Duration) *Accumulator {
 	return &Accumulator{
 		interval: interval,
@@ -38,12 +60,24 @@ func NewAccumulator(interval time.Duration) *Accumulator {
 	}
 }
 
+// NewAccumulatorAt aligns snapshot-derived counter windows with an external
+// event timeline. The first snapshot still establishes the counter baseline,
+// so time before that snapshot remains unobserved for cumulative counters.
+func NewAccumulatorAt(interval time.Duration, origin time.Time) *Accumulator {
+	acc := NewAccumulator(interval)
+	acc.origin = origin
+	acc.fixedOrigin = true
+	return acc
+}
+
 func (a *Accumulator) Observe(snapshot model.ThreadSnapshot) []model.IntervalReport {
 	snapshot = normalizeSnapshot(snapshot)
 	current := samplesByIdentity(snapshot.Samples)
 
 	if !a.initialized {
-		a.origin = snapshot.FinishedAt
+		if !a.fixedOrigin {
+			a.origin = snapshot.FinishedAt
+		}
 		a.initialized = true
 		a.previous = current
 		a.recordScan(snapshot)
@@ -99,6 +133,7 @@ func (a *Accumulator) observeGap(previous, current model.ThreadSample, end time.
 	}
 
 	a.observeSchedstat(previous, current, start, end)
+	a.observeDelays(previous, current, start, end)
 	a.recordGap(previous, start, end)
 	if previous.State == current.State {
 		a.addSegment(previous, previous.State, start, end)
@@ -109,6 +144,96 @@ func (a *Accumulator) observeGap(previous, current model.ThreadSample, end time.
 	a.addSegment(previous, previous.State, start, transitionAt)
 	a.addSegment(current, current.State, transitionAt, end)
 	a.recordTransition(current, start, transitionAt, end)
+}
+
+func (a *Accumulator) observeDelays(previous, current model.ThreadSample, start, end time.Time) {
+	if !previous.Delays.Available || !current.Delays.Available {
+		return
+	}
+	delta := delayDelta{
+		version:                current.Delays.Version,
+		accountingEnabled:      current.Delays.AccountingEnabled,
+		accountingEnabledKnown: current.Delays.AccountingEnabledKnown,
+	}
+	delta.cpu, delta.resets = calculateDelayCounterDelta(previous.Delays.CPU, current.Delays.CPU, delta.resets)
+	delta.blockIO, delta.resets = calculateDelayCounterDelta(previous.Delays.BlockIO, current.Delays.BlockIO, delta.resets)
+	delta.swapIn, delta.resets = calculateDelayCounterDelta(previous.Delays.SwapIn, current.Delays.SwapIn, delta.resets)
+	delta.reclaim, delta.resets = calculateDelayCounterDelta(previous.Delays.Reclaim, current.Delays.Reclaim, delta.resets)
+	delta.thrashing, delta.resets = calculateDelayCounterDelta(previous.Delays.Thrashing, current.Delays.Thrashing, delta.resets)
+	delta.compaction, delta.resets = calculateDelayCounterDelta(previous.Delays.Compaction, current.Delays.Compaction, delta.resets)
+	delta.writeProtectCopy, delta.resets = calculateDelayCounterDelta(previous.Delays.WriteProtectCopy, current.Delays.WriteProtectCopy, delta.resets)
+	delta.irq, delta.resets = calculateDelayCounterDelta(previous.Delays.IRQ, current.Delays.IRQ, delta.resets)
+	if !delta.hasComparableCounter() && delta.resets == 0 {
+		return
+	}
+	a.addDelayDelta(current, start, end, delta)
+}
+
+func calculateDelayCounterDelta(previous, current model.DelayCounter, resets int) (delayCounterDelta, int) {
+	if !previous.Available || !current.Available {
+		return delayCounterDelta{}, resets
+	}
+	if current.Count < previous.Count || current.TotalNanoseconds < previous.TotalNanoseconds {
+		return delayCounterDelta{}, resets + 1
+	}
+	return delayCounterDelta{
+		available:        true,
+		count:            current.Count - previous.Count,
+		totalNanoseconds: current.TotalNanoseconds - previous.TotalNanoseconds,
+	}, resets
+}
+
+func (d delayDelta) hasComparableCounter() bool {
+	return d.cpu.available || d.blockIO.available || d.swapIn.available || d.reclaim.available ||
+		d.thrashing.available || d.compaction.available || d.writeProtectCopy.available || d.irq.available
+}
+
+func (a *Accumulator) addDelayDelta(sample model.ThreadSample, start, end time.Time, delta delayDelta) {
+	total := end.Sub(start)
+	if total <= 0 {
+		return
+	}
+	totalNanoseconds := uint64(total)
+	gap := total
+
+	a.forEachWindow(start, end, func(index int64, overlapStart, overlapEnd time.Time) {
+		startOffset := uint64(overlapStart.Sub(start))
+		endOffset := uint64(overlapEnd.Sub(start))
+		stat := a.threadStats(index, sample)
+		stat.DelayVersion = delta.version
+		stat.DelayAccountingEnabled = delta.accountingEnabled
+		stat.DelayAccountingEnabledKnown = delta.accountingEnabledKnown
+		stat.DelayCounterResets += delta.resets
+		if delta.hasComparableCounter() {
+			stat.DelayObserved += overlapEnd.Sub(overlapStart)
+			stat.DelaySamplePairs++
+			if gap > stat.DelayMaxSampleGap {
+				stat.DelayMaxSampleGap = gap
+			}
+		}
+
+		addDelayCounterDelta(&stat.Delays.CPU, delta.cpu, startOffset, endOffset, totalNanoseconds)
+		addDelayCounterDelta(&stat.Delays.BlockIO, delta.blockIO, startOffset, endOffset, totalNanoseconds)
+		addDelayCounterDelta(&stat.Delays.SwapIn, delta.swapIn, startOffset, endOffset, totalNanoseconds)
+		addDelayCounterDelta(&stat.Delays.Reclaim, delta.reclaim, startOffset, endOffset, totalNanoseconds)
+		addDelayCounterDelta(&stat.Delays.Thrashing, delta.thrashing, startOffset, endOffset, totalNanoseconds)
+		addDelayCounterDelta(&stat.Delays.Compaction, delta.compaction, startOffset, endOffset, totalNanoseconds)
+		addDelayCounterDelta(&stat.Delays.WriteProtectCopy, delta.writeProtectCopy, startOffset, endOffset, totalNanoseconds)
+		addDelayCounterDelta(&stat.Delays.IRQ, delta.irq, startOffset, endOffset, totalNanoseconds)
+	})
+}
+
+func addDelayCounterDelta(target *model.DelayIntervalCounter, delta delayCounterDelta, startOffset, endOffset, totalNanoseconds uint64) {
+	if !delta.available {
+		return
+	}
+	target.Available = true
+	countStart := multiplyDivide(delta.count, startOffset, totalNanoseconds)
+	countEnd := multiplyDivide(delta.count, endOffset, totalNanoseconds)
+	totalStart := multiplyDivide(delta.totalNanoseconds, startOffset, totalNanoseconds)
+	totalEnd := multiplyDivide(delta.totalNanoseconds, endOffset, totalNanoseconds)
+	target.Count += countEnd - countStart
+	target.Total += nanosecondsDuration(totalEnd - totalStart)
 }
 
 func (a *Accumulator) observeSchedstat(previous, current model.ThreadSample, start, end time.Time) {
@@ -247,6 +372,9 @@ func (a *Accumulator) recordScan(snapshot model.ThreadSnapshot) {
 			continue
 		}
 		window := a.window(index)
+		if snapshot.SamplingMethod != "" {
+			window.quality.SamplingMethod = snapshot.SamplingMethod
+		}
 		window.quality.SnapshotCount++
 		if duration > window.quality.MaxScanDuration {
 			window.quality.MaxScanDuration = duration
@@ -314,7 +442,9 @@ func (a *Accumulator) finalizeThrough(watermark time.Time) []model.IntervalRepor
 		var stats []model.ThreadIntervalStats
 		if window != nil {
 			quality = window.quality
-			quality.SamplingMethod = procSamplingMethod
+			if quality.SamplingMethod == "" {
+				quality.SamplingMethod = procSamplingMethod
+			}
 			quality.MissedTransitionsPossible = true
 			stats = sortedStats(window.stats)
 			for _, stat := range stats {
@@ -323,6 +453,25 @@ func (a *Accumulator) finalizeThrough(watermark time.Time) []model.IntervalRepor
 					quality.SchedstatThreadCount++
 				}
 				quality.SchedstatCounterResets += stat.SchedstatCounterResets
+				quality.TaskstatsCounterResets += stat.DelayCounterResets
+				if stat.DelayCountersAvailable() {
+					quality.TaskstatsAvailable = true
+					quality.TaskstatsThreadCount++
+					if quality.TaskstatsVersionMin == 0 || stat.DelayVersion < quality.TaskstatsVersionMin {
+						quality.TaskstatsVersionMin = stat.DelayVersion
+					}
+					if stat.DelayVersion > quality.TaskstatsVersionMax {
+						quality.TaskstatsVersionMax = stat.DelayVersion
+					}
+				}
+				if stat.DelayAccountingEnabledKnown {
+					if !quality.DelayAccountingEnabledKnown {
+						quality.DelayAccountingEnabled = stat.DelayAccountingEnabled
+					} else {
+						quality.DelayAccountingEnabled = quality.DelayAccountingEnabled && stat.DelayAccountingEnabled
+					}
+					quality.DelayAccountingEnabledKnown = true
+				}
 			}
 		}
 

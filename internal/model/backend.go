@@ -11,3 +11,10 @@ type BackendCapabilities struct {
 	Accuracy                  string
 	Warnings                  []string
 }
+
+// BackendSourceStatus describes which concrete data sources an adaptive
+// backend currently uses and which sources it had to disable.
+type BackendSourceStatus struct {
+	Active      []string
+	Unavailable []string
+}

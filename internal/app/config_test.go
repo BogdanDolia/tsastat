@@ -18,6 +18,9 @@ func TestParseConfigUsesDefaultSampleInterval(t *testing.T) {
 	if cfg.SampleInterval != 10*time.Millisecond {
 		t.Fatalf("sample interval = %s, want 10ms", cfg.SampleInterval)
 	}
+	if cfg.Backend != "auto" {
+		t.Fatalf("backend = %q, want auto", cfg.Backend)
+	}
 }
 
 func TestParseConfigAcceptsCustomSampleInterval(t *testing.T) {

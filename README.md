@@ -6,21 +6,33 @@
 [![License](https://img.shields.io/github/license/BogdanDolia/tsastat)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux-blue)](#requirements)
 
-`tsastat` is a lightweight Linux CLI for per-thread scheduler analysis. Its
-eBPF backend builds an event-timed scheduler timeline, while the proc backend
-provides a lower-privilege sampling fallback.
+`tsastat` is a lightweight Linux CLI for per-thread scheduler and delay
+analysis. Its default `auto` backend combines an event-timed eBPF scheduler
+timeline, cumulative taskstats resource delays, and procfs identity/state
+data. It degrades automatically when a privileged source is unavailable.
 
 ```text
-tsastat: pid=4242 backend=ebpf interval=1s mode=event-driven
+tsastat: pid=4242 backend=auto interval=1s sample=10ms mode=hybrid
 
-TIME      PID   TID   START_TICKS  START_NS     COMM       RUN_ms  CPU_ms  RQ_ms  SLICES  SCHED_OBS_ms  EVTS  WAKEUPS  INCOMP_WAKE  WAKE_AVG_us  WAKE_MAX_us  LOST_TOTAL  LATE  INIT_RACE  CLK_UNCERT_ns  SLEEP_ms  D_ms  STOP_ms  Z_ms  UNK_ms  OBS_ms  GAP_ms  UNCERT_ms  RUN_%  SLEEP_%  D_%
-12:10:01  4242  4243  0            98765500000  worker-1   240     210     30     28      1000          83    12       0            41           115          0           0     0          180            750       10    0        0     0       1000    0       0          24.0   75.0     1.0
+TIME      PID   TID   COMM      RUN_ms  CPU_ms  RQ_ms  WAKE_AVG_us  CPU_DLY_ms  IO_DLY_ms  RECLAIM_ms  IRQ_DLY_ms
+12:10:01  4242  4243  worker-1  240     210     30     41           -           -          -           -
 ```
 
+The real table includes identity, quality, all taskstats memory-delay
+subtypes, and sampled-state columns; the example selects the most common
+fields for readability.
+
 > [!IMPORTANT]
+> `auto` and `hybrid` are aliases for the same adaptive backend. Check
+> `active_sources`, `unavailable_sources`, and `hybrid_identity_mismatches`
+> before interpreting a report. A fallback report is intentionally less
+> complete than one produced with all sources.
+>
 > The `ebpf` backend is exact only while its scheduler event stream is
 > complete. Always inspect the lost-event and late-event quality fields. The
-> `proc` backend remains a sampling approximation.
+> `taskstats` backend has exact cumulative counter deltas but approximate
+> placement inside sampling gaps, while `proc` state remains a sampling
+> approximation.
 
 ## Why tsastat?
 
@@ -34,6 +46,8 @@ It is useful for:
 - spotting threads observed in uninterruptible sleep (`D`);
 - separating actual on-CPU time from runnable runqueue wait;
 - measuring wakeup-to-switch-in scheduler latency;
+- attributing delays to CPU contention, synchronous block I/O, swap-in,
+  reclaim, thrashing, compaction, write-protect copy, and IRQ/SOFTIRQ;
 - comparing thread behavior before and during a workload;
 - exporting interval data as JSON Lines for later analysis;
 - learning how Linux exposes task state through procfs.
@@ -47,6 +61,15 @@ It is useful for:
 The `proc` backend does not normally require root when inspecting your own
 processes.
 
+The `taskstats` backend additionally requires:
+
+- `CONFIG_TASKSTATS` and `CONFIG_TASK_DELAY_ACCT`;
+- `CAP_NET_ADMIN`, normally provided by root, because the kernel marks the
+  TASKSTATS Generic Netlink command as an administrative operation;
+- `kernel.task_delayacct=1` before the target task starts for non-CPU resource
+  delay counters. CPU runqueue delay can still be populated from scheduler
+  information when this runtime switch is off.
+
 The `ebpf` backend additionally requires:
 
 - upstream Linux 6.1 or newer for the four-argument `sched_switch`
@@ -56,6 +79,11 @@ The `ebpf` backend additionally requires:
   `CONFIG_TRACEPOINTS`;
 - permission to load tracing BPF programs, normally root or an appropriate
   `CAP_BPF`/`CAP_PERFMON` configuration.
+
+When `tsastat` itself runs in a container, use the host PID namespace (for
+example Docker `--pid=host`) and pass the host-visible PID. The in-kernel eBPF
+filter compares `task_struct.tgid`, which is not the remapped PID shown by a
+private container PID namespace.
 
 The CO-RE BPF object is embedded in the binary. Clang, bpftool, and kernel
 headers are not required at runtime.
@@ -86,10 +114,24 @@ Check which backends are available:
 tsastat doctor
 ```
 
+Automatically combine every usable source (this is the default):
+
+```bash
+sudo tsastat -p 1234 --backend auto --sample 10ms \
+  --interval 1s --count 10
+```
+
 Capture an event-timed scheduler timeline:
 
 ```bash
 sudo tsastat -p 1234 --backend ebpf --interval 1s --count 10
+```
+
+Attribute per-thread resource delays:
+
+```bash
+sudo tsastat -p 1234 --backend taskstats --sample 50ms \
+  --interval 1s --count 10 --sort block_io_delay
 ```
 
 Monitor a process for ten one-second intervals while sampling every 10ms:
@@ -118,16 +160,18 @@ Press `Ctrl-C` to stop continuous monitoring.
 | --- | --- | --- |
 | `-p`, `--pid` | Target process ID | required |
 | `-i`, `--interval` | Time between aggregated reports | required |
-| `--sample` | Time between procfs samples; ignored by `ebpf` | `10ms` |
+| `-b`, `--backend` | `auto`, `hybrid`, `proc`, `taskstats`, or `ebpf` | `auto` |
+| `--sample` | Time between snapshots used by `auto`, `hybrid`, `proc`, and `taskstats`; ignored by explicit `ebpf` | `10ms` |
 | `-c`, `--count` | Number of reports; omitted means continuous | continuous |
 | `--tid` | Show only one thread ID | all threads |
 | `--comm` | Filter thread names by substring or glob | no filter |
-| `--sort` | Sort by `tid`, `comm`, `running`, `sleeping`, `uninterruptible`, `on_cpu`, `runnable`, `wakeup_latency`, or `total` | `tid` |
+| `--sort` | Sort by state, scheduler, or delay metric; delay fields include `cpu_delay`, `block_io_delay`, `swap_delay`, `reclaim_delay`, `thrashing_delay`, `compaction_delay`, `wpcopy_delay`, and `irq_delay` | `tid` |
 | `-o`, `--output` | Output format: `table` or `json` | `table` |
 | `--show-idle` | Include threads observed only in the idle state | disabled |
 | `--no-header` | Suppress table headers | disabled |
 
-For `proc`, the sampling interval must be shorter than the report interval.
+For `auto`, `hybrid`, `proc`, and `taskstats`, the sampling interval must be
+shorter than the report interval.
 Shorter sampling intervals can capture more transitions, but they also add
 overhead. The `ebpf` backend has no sampling cadence.
 
@@ -140,10 +184,26 @@ sudo tsastat -p 1234 --backend ebpf --interval 1s --count 10 \
   --output json > thread-states.jsonl
 ```
 
-Each line represents one reporting interval:
+Each line represents one reporting interval. Adaptive reports expose their
+runtime selection explicitly, for example:
+
+```json
+{"backend":"auto","quality":{"active_sources":["ebpf","proc","taskstats"],"unavailable_sources":[],"hybrid_identity_mismatches":0,"sampling_method":"ebpf_sched_events+taskstats_counters","scheduler_event_timeline":true,"taskstats_available":true}}
+```
+
+The eBPF-shaped example below focuses on scheduler fields; current output also
+includes adaptive/taskstats quality keys and an unavailable `delays` object
+for that explicit backend:
 
 ```json
 {"timestamp":"2026-05-08T12:01:01Z","interval_start":"2026-05-08T12:01:00Z","interval_end":"2026-05-08T12:01:01Z","pid":1234,"backend":"ebpf","interval_ms":1000,"sample_interval_ms":0,"quality":{"sampling_method":"ebpf_sched_events","snapshot_count":0,"max_scan_duration_ms":0,"max_sample_gap_ms":0,"missed_transitions_possible":false,"schedstat_available":false,"schedstat_thread_count":0,"schedstat_counter_resets":0,"scheduler_event_timeline":true,"scheduler_event_count":83,"scheduler_lost_events_total":0,"scheduler_late_events":0,"scheduler_incomplete_wakeups":0,"initialization_races":0,"clock_calibration_uncertainty_ns":180},"threads":[{"tid":1235,"start_time_ticks":0,"start_time_ns":98765500000,"comm":"worker-1","durations_ms":{"running":240,"sleeping":750,"uninterruptible":10,"stopped":0,"tracing_stop":0,"zombie":0,"dead":0,"idle":0,"unknown":0},"percent":{"running":24,"sleeping":75,"uninterruptible":1,"unknown":0},"quality":{"tracked_ms":1000,"samples":0,"max_sample_gap_ms":0,"detected_transitions":0,"detected_transition_uncertainty_ms":0},"scheduler":{"available":true,"source":"ebpf_sched_events","counter_deltas_exact_between_reads":false,"event_timed":true,"window_allocation":"exact_event_timestamps","on_cpu_ms":210,"runqueue_wait_ms":30,"timeslices":28,"observed_ms":1000,"on_cpu_percent":21,"runqueue_wait_percent":3,"sample_pairs":0,"max_sample_gap_ms":0,"counter_resets":0,"event_count":83,"wakeup_count":12,"wakeup_latency_total_us":492,"wakeup_latency_avg_us":41,"wakeup_latency_max_us":115,"incomplete_wakeup_count":0}}]}
+```
+
+For `taskstats`, each thread also has a versioned `delays` object. Durations
+are emitted in nanoseconds so sub-millisecond stalls are not truncated:
+
+```json
+{"backend":"taskstats","quality":{"sampling_method":"taskstats_counters_procfs_midpoint","taskstats_available":true,"taskstats_thread_count":1,"taskstats_version_min":14,"taskstats_version_max":14,"taskstats_counter_resets":0,"kernel_task_delayacct_enabled":true,"kernel_task_delayacct_enabled_known":true},"threads":[{"tid":1235,"comm":"worker-1","delays":{"available":true,"source":"linux_taskstats_delayacct","version":14,"kernel_task_delayacct_enabled":true,"kernel_task_delayacct_enabled_known":true,"counter_deltas_exact_between_reads":true,"field_pairs_atomic":false,"window_allocation":"proportional_by_wall_time","observed_ms":1000,"sample_pairs":20,"max_sample_gap_ms":52,"counter_resets":0,"cpu":{"available":true,"count":4,"total_ns":73000,"average_ns":18250},"block_io":{"available":true,"count":1,"total_ns":2100000,"average_ns":2100000},"swap_in":{"available":true,"count":0,"total_ns":0,"average_ns":0},"reclaim":{"available":true,"count":0,"total_ns":0,"average_ns":0},"thrashing":{"available":true,"count":0,"total_ns":0,"average_ns":0},"compaction":{"available":true,"count":0,"total_ns":0,"average_ns":0},"write_protect_copy":{"available":true,"count":0,"total_ns":0,"average_ns":0},"irq":{"available":true,"count":2,"total_ns":18000,"average_ns":9000}}}]}
 ```
 
 For `ebpf`, `CPU_ms` is time between switch-in and switch-out, `RQ_ms` is time
@@ -181,6 +241,32 @@ thread was actively executing for the entire attributed duration.
 
 ## Accuracy and limitations
 
+### auto/hybrid backend
+
+`auto` and `hybrid` use the same source policy:
+
+1. attach eBPF and build the scheduler timeline from exact event timestamps;
+2. sample taskstats and procfs on `--sample`, merge their cumulative delay and
+   schedstat counters by `(tid, starttime)`, and align those counter windows to
+   the eBPF report boundaries;
+3. if eBPF cannot be opened, continue with combined taskstats/proc snapshots;
+4. if taskstats is also unavailable, continue with proc state and schedstat
+   only.
+
+When the eBPF timeline is active, proc schedstat values are not added to eBPF
+scheduler durations, which prevents double counting. Only taskstats delay
+counters are copied into the event-derived thread row. A copy requires a
+proven identity match: equal TID plus equal non-zero proc `starttime`, or equal
+non-zero kernel start time. A counter series that cannot be matched safely is
+omitted and counted in `hybrid_identity_mismatches`; it is never attached by
+TID alone.
+
+Taskstats and proc scans are bracketed into one hybrid snapshot. Their counter
+deltas remain exact between reads, while placement inside a report window is
+proportional to wall time. eBPF scheduler segments retain their exact event
+timestamps. `active_sources` and `unavailable_sources` describe the actual
+path used for each emitted interval.
+
 ### eBPF backend
 
 The embedded CO-RE programs attach to `tp_btf/sched_switch`,
@@ -213,6 +299,64 @@ Limitations are explicit:
   event proves whether the thread is on-CPU or merely runnable;
 - D-state means uninterruptible sleep and does not by itself prove I/O wait;
 - wakeup latency is scheduler latency, not end-to-end application latency.
+- containerized tracing requires the host PID namespace; a namespace-local PID
+  does not match the kernel TGID used by the eBPF filter.
+
+### taskstats backend
+
+The taskstats backend resolves the `TASKSTATS` Generic Netlink family and sends
+`TASKSTATS_CMD_GET` for every live TID found under `/proc/<pid>/task`. It uses
+`TASKSTATS_CMD_ATTR_PID`, not the process-wide TGID aggregate, so each output
+row remains a per-thread measurement. Proc `starttime` is retained as the
+stable identity and proc state is sampled at the midpoint of the combined
+stat/taskstats read.
+
+The proc stat record is read again after each Netlink reply. If `(tid,
+starttime)` changed, the sample is retried and never attached to the stale
+identity.
+
+Successive cumulative counter differences report these delay reasons:
+
+- `cpu`: runnable time waiting for a CPU;
+- `block_io`: waiting for synchronous block I/O completion; I/O submission
+  delay is not included;
+- `swap_in`: waiting for page-fault swap-in I/O;
+- `reclaim`: direct memory reclaim (`freepages` in the kernel UAPI);
+- `thrashing`: page-cache thrashing delay;
+- `compaction`: direct memory compaction delay;
+- `write_protect_copy`: write-protect copy delay;
+- `irq`: IRQ and softirq time charged to the task.
+
+The decoder checks both the taskstats version and returned payload length.
+Every reason has its own `available` flag, so an older kernel does not silently
+turn an unsupported counter into a real zero. Counter decreases are rejected
+per field and counted in `taskstats_counter_resets`; valid reasons from the
+same pair are still retained.
+
+Taskstats version 15 used an incompatible field layout before version 16
+restored the append-only UAPI. The backend rejects version 15 rather than
+silently decoding shifted fields. Older versions retain accurate partial
+results through per-field availability; all P3 reasons require v14 or v16+.
+
+Kernel totals are cumulative nanoseconds, and their differences are exact
+between successful reads. Placement inside a fixed report window is not
+event-timed: a pair crossing a boundary is divided proportionally by wall
+time, while preserving its total across windows. `max_sample_gap_ms` exposes
+that placement uncertainty. The CPU `count` and `delay_total` fields are not
+updated atomically, so their independently correct snapshots can produce a
+slightly inconsistent per-interval average.
+
+`kernel.task_delayacct` controls allocation of the task structure used by the
+non-CPU resource counters. Those counters require the switch to be enabled
+before the task starts. CPU wait comes from scheduler information and may
+still advance while the switch is off; the JSON contract therefore reports
+the switch separately as `kernel_task_delayacct_enabled` rather than treating
+all reasons as unavailable.
+
+This backend polls live tasks and does not register for task-exit records.
+Very short-lived threads can therefore disappear before their next query.
+Sampled proc states have the same missed-transition limitations as the proc
+backend, and a complete taskstats scan is not atomic across threads.
 
 ### proc backend
 
@@ -257,8 +401,9 @@ Consequences of this approach:
 
 | Backend | Status | Semantics |
 | --- | --- | --- |
+| `auto` / `hybrid` | Default | Combines all usable sources; falls back from eBPF + taskstats + proc, to taskstats + proc, to proc |
 | `proc` | Available | Sampled state plus schedstat scheduler-counter deltas when available |
-| `taskstats` | Planned | Linux Delay Accounting counters |
+| `taskstats` | Available on supported Linux kernels | Per-TID CPU, block I/O, swap-in, reclaim, thrashing, compaction, write-protect-copy, and IRQ delay-counter deltas |
 | `ebpf` | Available on supported Linux kernels | Event-timed on-CPU, runnable, sleep, D-state, and wakeup latency |
 
 Run `tsastat doctor` to see backend availability and relevant kernel warnings.
@@ -292,10 +437,15 @@ type SchedulerEventBackend interface {
     Backend
     OpenSchedulerEvents(ctx context.Context, pid int) (model.SchedulerEventStream, error)
 }
+
+type HybridBackend interface {
+    SchedulerEventBackend
+    SnapshotBackend
+}
 ```
 
-Backends with different semantics are not treated as interchangeable ground
-truth.
+The collector recognizes the combined interface, aligns snapshot counter
+windows with the event origin, and merges only non-overlapping metric families.
 
 ## Development
 
@@ -323,7 +473,6 @@ build provenance attestations. Release binaries report their version through
 - process-level summary rows;
 - CSV output;
 - multi-process and process-tree monitoring;
-- experimental taskstats support;
 - optional TUI frontend.
 
 ## License

@@ -29,7 +29,7 @@ type Config struct {
 
 func parseConfig(args []string, stderr io.Writer) (Config, error) {
 	var cfg Config
-	cfg.Backend = "proc"
+	cfg.Backend = "auto"
 	cfg.Output = "table"
 	cfg.Sort = "tid"
 	cfg.SampleInterval = 10 * time.Millisecond
@@ -49,18 +49,18 @@ func parseConfig(args []string, stderr io.Writer) (Config, error) {
 	fs.IntVar(&cfg.PID, "pid", 0, "target process ID")
 	fs.Var(&intervalValue, "i", "report interval (for example 500ms, 1s, 2s)")
 	fs.Var(&intervalValue, "interval", "report interval (for example 500ms, 1s, 2s)")
-	fs.Var(&sampleValue, "sample", "proc sampling interval")
-	fs.Var(&sampleValue, "sample-interval", "proc sampling interval")
+	fs.Var(&sampleValue, "sample", "snapshot sampling interval for auto, hybrid, proc, and taskstats")
+	fs.Var(&sampleValue, "sample-interval", "snapshot sampling interval for auto, hybrid, proc, and taskstats")
 	fs.Var(&countValue, "c", "number of intervals to print")
 	fs.Var(&countValue, "count", "number of intervals to print")
-	fs.StringVar(&cfg.Backend, "b", cfg.Backend, "backend: proc, taskstats, ebpf")
-	fs.StringVar(&cfg.Backend, "backend", cfg.Backend, "backend: proc, taskstats, ebpf")
+	fs.StringVar(&cfg.Backend, "b", cfg.Backend, "backend: auto, hybrid, proc, taskstats, ebpf")
+	fs.StringVar(&cfg.Backend, "backend", cfg.Backend, "backend: auto, hybrid, proc, taskstats, ebpf")
 	fs.StringVar(&cfg.Output, "o", cfg.Output, "output format: table, json, csv")
 	fs.StringVar(&cfg.Output, "output", cfg.Output, "output format: table, json, csv")
 	fs.IntVar(&cfg.TID, "tid", 0, "filter by thread ID")
 	fs.StringVar(&cfg.Comm, "comm", "", "filter by thread name substring or glob pattern")
 	fs.BoolVar(&cfg.ShowIdle, "show-idle", false, "show threads observed in the idle state")
-	fs.StringVar(&cfg.Sort, "sort", cfg.Sort, "sort field: tid, comm, running, sleeping, uninterruptible, on_cpu, runnable, wakeup_latency, total")
+	fs.StringVar(&cfg.Sort, "sort", cfg.Sort, "sort field: tid, comm, running, sleeping, uninterruptible, on_cpu, runnable, wakeup_latency, cpu_delay, block_io_delay, swap_delay, reclaim_delay, thrashing_delay, compaction_delay, wpcopy_delay, irq_delay, total")
 	fs.BoolVar(&cfg.NoHeader, "no-header", false, "suppress table headers")
 	fs.BoolVar(&cfg.Version, "version", false, "print version")
 
@@ -199,9 +199,9 @@ Examples:
   tsastat -p 1234 -i 1s --sample 10ms --count 10
   tsastat -p 1234 -i 1s --sample 20ms --output json
 
-The proc backend samples Linux thread states repeatedly and can miss short
-transitions. The ebpf backend consumes scheduler events and separates on-CPU
-time from runnable wait, sleep, and D-state time.
+The default auto backend combines eBPF scheduler events, taskstats delay
+counters, and procfs identity/state data. It falls back to taskstats plus
+procfs, then procfs alone, when privileged kernel sources are unavailable.
 
 Flags:
 `

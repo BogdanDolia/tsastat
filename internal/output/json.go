@@ -50,6 +50,7 @@ func (r *JSONRenderer) Render(report model.IntervalReport) error {
 			Percent:              percents(stat),
 			Quality:              newJSONThreadQuality(stat),
 			Scheduler:            newJSONSchedulerMetrics(stat),
+			Delays:               newJSONDelayMetrics(stat),
 		})
 	}
 
@@ -77,24 +78,35 @@ type jsonThread struct {
 	Percent              map[string]float64   `json:"percent"`
 	Quality              jsonThreadQuality    `json:"quality"`
 	Scheduler            jsonSchedulerMetrics `json:"scheduler"`
+	Delays               jsonDelayMetrics     `json:"delays"`
 }
 
 type jsonIntervalQuality struct {
-	SamplingMethod                string `json:"sampling_method"`
-	SnapshotCount                 int    `json:"snapshot_count"`
-	MaxScanDurationMS             int64  `json:"max_scan_duration_ms"`
-	MaxSampleGapMS                int64  `json:"max_sample_gap_ms"`
-	MissedTransitionsPossible     bool   `json:"missed_transitions_possible"`
-	SchedstatAvailable            bool   `json:"schedstat_available"`
-	SchedstatThreadCount          int    `json:"schedstat_thread_count"`
-	SchedstatCounterResets        int    `json:"schedstat_counter_resets"`
-	SchedulerEventTimeline        bool   `json:"scheduler_event_timeline"`
-	SchedulerEventCount           int    `json:"scheduler_event_count"`
-	SchedulerLostEventsTotal      uint64 `json:"scheduler_lost_events_total"`
-	SchedulerLateEvents           int    `json:"scheduler_late_events"`
-	SchedulerIncompleteWakeups    int    `json:"scheduler_incomplete_wakeups"`
-	InitializationRaces           int    `json:"initialization_races"`
-	ClockCalibrationUncertaintyNS int64  `json:"clock_calibration_uncertainty_ns"`
+	ActiveSources                 []string `json:"active_sources"`
+	UnavailableSources            []string `json:"unavailable_sources"`
+	HybridIdentityMismatches      int      `json:"hybrid_identity_mismatches"`
+	SamplingMethod                string   `json:"sampling_method"`
+	SnapshotCount                 int      `json:"snapshot_count"`
+	MaxScanDurationMS             int64    `json:"max_scan_duration_ms"`
+	MaxSampleGapMS                int64    `json:"max_sample_gap_ms"`
+	MissedTransitionsPossible     bool     `json:"missed_transitions_possible"`
+	SchedstatAvailable            bool     `json:"schedstat_available"`
+	SchedstatThreadCount          int      `json:"schedstat_thread_count"`
+	SchedstatCounterResets        int      `json:"schedstat_counter_resets"`
+	SchedulerEventTimeline        bool     `json:"scheduler_event_timeline"`
+	SchedulerEventCount           int      `json:"scheduler_event_count"`
+	SchedulerLostEventsTotal      uint64   `json:"scheduler_lost_events_total"`
+	SchedulerLateEvents           int      `json:"scheduler_late_events"`
+	SchedulerIncompleteWakeups    int      `json:"scheduler_incomplete_wakeups"`
+	InitializationRaces           int      `json:"initialization_races"`
+	ClockCalibrationUncertaintyNS int64    `json:"clock_calibration_uncertainty_ns"`
+	TaskstatsAvailable            bool     `json:"taskstats_available"`
+	TaskstatsThreadCount          int      `json:"taskstats_thread_count"`
+	TaskstatsVersionMin           uint16   `json:"taskstats_version_min"`
+	TaskstatsVersionMax           uint16   `json:"taskstats_version_max"`
+	TaskstatsCounterResets        int      `json:"taskstats_counter_resets"`
+	DelayAccountingEnabled        bool     `json:"kernel_task_delayacct_enabled"`
+	DelayAccountingEnabledKnown   bool     `json:"kernel_task_delayacct_enabled_known"`
 }
 
 type jsonThreadQuality struct {
@@ -128,6 +140,36 @@ type jsonSchedulerMetrics struct {
 	IncompleteWakeupCount          int     `json:"incomplete_wakeup_count"`
 }
 
+type jsonDelayMetrics struct {
+	Available                      bool             `json:"available"`
+	Source                         string           `json:"source"`
+	Version                        uint16           `json:"version"`
+	AccountingEnabled              bool             `json:"kernel_task_delayacct_enabled"`
+	AccountingEnabledKnown         bool             `json:"kernel_task_delayacct_enabled_known"`
+	CounterDeltasExactBetweenReads bool             `json:"counter_deltas_exact_between_reads"`
+	FieldPairsAtomic               bool             `json:"field_pairs_atomic"`
+	WindowAllocation               string           `json:"window_allocation"`
+	ObservedMS                     int64            `json:"observed_ms"`
+	SamplePairs                    int              `json:"sample_pairs"`
+	MaxSampleGapMS                 int64            `json:"max_sample_gap_ms"`
+	CounterResets                  int              `json:"counter_resets"`
+	CPU                            jsonDelayCounter `json:"cpu"`
+	BlockIO                        jsonDelayCounter `json:"block_io"`
+	SwapIn                         jsonDelayCounter `json:"swap_in"`
+	Reclaim                        jsonDelayCounter `json:"reclaim"`
+	Thrashing                      jsonDelayCounter `json:"thrashing"`
+	Compaction                     jsonDelayCounter `json:"compaction"`
+	WriteProtectCopy               jsonDelayCounter `json:"write_protect_copy"`
+	IRQ                            jsonDelayCounter `json:"irq"`
+}
+
+type jsonDelayCounter struct {
+	Available bool   `json:"available"`
+	Count     uint64 `json:"count"`
+	TotalNS   int64  `json:"total_ns"`
+	AverageNS int64  `json:"average_ns"`
+}
+
 func durationsMS(stat model.ThreadIntervalStats) map[string]int64 {
 	return map[string]int64{
 		string(model.StateRunning):         stat.Duration(model.StateRunning).Milliseconds(),
@@ -153,6 +195,9 @@ func percents(stat model.ThreadIntervalStats) map[string]float64 {
 
 func newJSONIntervalQuality(quality model.IntervalQuality) jsonIntervalQuality {
 	return jsonIntervalQuality{
+		ActiveSources:                 append([]string{}, quality.ActiveSources...),
+		UnavailableSources:            append([]string{}, quality.UnavailableSources...),
+		HybridIdentityMismatches:      quality.HybridIdentityMismatches,
 		SamplingMethod:                quality.SamplingMethod,
 		SnapshotCount:                 quality.SnapshotCount,
 		MaxScanDurationMS:             quality.MaxScanDuration.Milliseconds(),
@@ -168,6 +213,54 @@ func newJSONIntervalQuality(quality model.IntervalQuality) jsonIntervalQuality {
 		SchedulerIncompleteWakeups:    quality.SchedulerIncompleteWakeups,
 		InitializationRaces:           quality.InitializationRaces,
 		ClockCalibrationUncertaintyNS: quality.ClockCalibrationUncertainty.Nanoseconds(),
+		TaskstatsAvailable:            quality.TaskstatsAvailable,
+		TaskstatsThreadCount:          quality.TaskstatsThreadCount,
+		TaskstatsVersionMin:           quality.TaskstatsVersionMin,
+		TaskstatsVersionMax:           quality.TaskstatsVersionMax,
+		TaskstatsCounterResets:        quality.TaskstatsCounterResets,
+		DelayAccountingEnabled:        quality.DelayAccountingEnabled,
+		DelayAccountingEnabledKnown:   quality.DelayAccountingEnabledKnown,
+	}
+}
+
+func newJSONDelayMetrics(stat model.ThreadIntervalStats) jsonDelayMetrics {
+	available := stat.DelayCountersAvailable()
+	source := ""
+	windowAllocation := "unavailable"
+	if available {
+		source = "linux_taskstats_delayacct"
+		windowAllocation = "proportional_by_wall_time"
+	}
+	return jsonDelayMetrics{
+		Available:                      available,
+		Source:                         source,
+		Version:                        stat.DelayVersion,
+		AccountingEnabled:              stat.DelayAccountingEnabled,
+		AccountingEnabledKnown:         stat.DelayAccountingEnabledKnown,
+		CounterDeltasExactBetweenReads: available,
+		FieldPairsAtomic:               false,
+		WindowAllocation:               windowAllocation,
+		ObservedMS:                     stat.DelayObserved.Milliseconds(),
+		SamplePairs:                    stat.DelaySamplePairs,
+		MaxSampleGapMS:                 stat.DelayMaxSampleGap.Milliseconds(),
+		CounterResets:                  stat.DelayCounterResets,
+		CPU:                            newJSONDelayCounter(stat.Delays.CPU),
+		BlockIO:                        newJSONDelayCounter(stat.Delays.BlockIO),
+		SwapIn:                         newJSONDelayCounter(stat.Delays.SwapIn),
+		Reclaim:                        newJSONDelayCounter(stat.Delays.Reclaim),
+		Thrashing:                      newJSONDelayCounter(stat.Delays.Thrashing),
+		Compaction:                     newJSONDelayCounter(stat.Delays.Compaction),
+		WriteProtectCopy:               newJSONDelayCounter(stat.Delays.WriteProtectCopy),
+		IRQ:                            newJSONDelayCounter(stat.Delays.IRQ),
+	}
+}
+
+func newJSONDelayCounter(counter model.DelayIntervalCounter) jsonDelayCounter {
+	return jsonDelayCounter{
+		Available: counter.Available,
+		Count:     counter.Count,
+		TotalNS:   counter.Total.Nanoseconds(),
+		AverageNS: counter.Average().Nanoseconds(),
 	}
 }
 
