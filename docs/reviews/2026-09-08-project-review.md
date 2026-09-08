@@ -2,7 +2,7 @@
 
 Review baseline: [`8d0c2bd93d450d2b1e4c61d739d0ed3afe591a7c`](https://github.com/BogdanDolia/tsastat/commit/8d0c2bd93d450d2b1e4c61d739d0ed3afe591a7c), the `main` branch on September 8, 2026. The review covered the CLI, procfs, taskstats/Netlink, eBPF C programs and Go stream, both accumulators, hybrid merging, JSON/table output, doctor, tests, CI/release/Pages workflows, and the published browser viewer. Source code was not modified during the analysis. Experimental checks ran in a separate temporary copy of the project. This document describes the specified commit; the fixes and new features listed below have not been implemented.
 
-Seven reproducible defects were found: one P1 and six P2 issues. The most significant problem is numerical precision loss during export, which hides thread activity in the viewer. No P0 issues were identified within the reviewed scope. The passing standard tests do not cover the scenarios described below.
+Seven reproducible defects were found: one P1 and six P2 issues. The most significant problem is numerical precision loss during export, which hides thread activity in the viewer. No P0 issues were identified within the reviewed scope. The passing standard tests do not cover the scenarios described below. Reproductions include synthetic Go inputs, Node checks, and browser interactions; they do not establish that all seven defects were observed during live Linux collection.
 
 At the time of the review, the published [GitHub Pages website](https://bogdandolia.github.io/tsastat/) was accessible. The latest [Pages deployment](https://github.com/BogdanDolia/tsastat/actions/runs/31508922349) had succeeded and matched the reviewed SHA. The latest release at that time was `v0.1.0`. Five Dependabot PRs, #14–18, were open; their changes are outside this review of `main`.
 
@@ -10,7 +10,7 @@ At the time of the review, the published [GitHub Pages website](https://bogdando
 
 Location: [internal/output/json.go:290](https://github.com/BogdanDolia/tsastat/blob/8d0c2bd93d450d2b1e4c61d739d0ed3afe591a7c/internal/output/json.go#L290), [wakeup conversion:301](https://github.com/BogdanDolia/tsastat/blob/8d0c2bd93d450d2b1e4c61d739d0ed3afe591a7c/internal/output/json.go#L301), [viewer sorting:205](https://github.com/BogdanDolia/tsastat/blob/8d0c2bd93d450d2b1e4c61d739d0ed3afe591a7c/site/app.js#L205).
 
-`time.Duration.Milliseconds()` discards fractional milliseconds from CPU/RQ durations, and `Microseconds()` discards fractional microseconds from wakeup latency. In a separate test, CPU=900 µs, RQ=800 µs, and wakeup=800 ns were serialized as `on_cpu_ms=0`, `runqueue_wait_ms=0`, and `wakeup_latency_avg_us=0`. Meanwhile, `on_cpu_percent=0.09` showed that the collector retained the nonzero activity internally. The viewer uses the truncated values for its table, sorting, and bar widths. Threads with short CPU/RQ durations become visually indistinguishable from threads with no activity. Windows shorter than one millisecond also lose precision in `interval_ms` and coverage fields.
+`time.Duration.Milliseconds()` discards fractional milliseconds from CPU/RQ durations, and `Microseconds()` discards fractional microseconds from wakeup latency. A synthetic `ThreadIntervalStats` value with CPU=900 µs, RQ=800 µs, and wakeup=800 ns was passed to the actual Go JSON renderer and serialized as `on_cpu_ms=0`, `runqueue_wait_ms=0`, and `wakeup_latency_avg_us=0`. Meanwhile, `on_cpu_percent=0.09` retained evidence of the nonzero input in the same export. This isolates precision loss in serialization; it is not a measurement of live collector accuracy. The viewer uses the truncated values for its table, sorting, and bar widths. Threads with short CPU/RQ durations become visually indistinguishable from threads with no activity. Code inspection also shows that windows shorter than one millisecond lose precision in `interval_ms` and coverage fields.
 
 Proposed fix: add exact duration fields in nanoseconds, or introduce fractional milliseconds through a versioned schema. Adding fields while retaining the existing ones is safer for compatibility. Round only the displayed text; sort and aggregate the original values. Regression coverage should include nonzero values below 1 ms/1 µs, different short intervals, and preservation of totals after export.
 
@@ -18,7 +18,7 @@ Proposed fix: add exact duration fields in nanoseconds, or introduce fractional 
 
 Location: [internal/collector/event_accumulator.go:179](https://github.com/BogdanDolia/tsastat/blob/8d0c2bd93d450d2b1e4c61d739d0ed3afe591a7c/internal/collector/event_accumulator.go#L179), [exit handling:235](https://github.com/BogdanDolia/tsastat/blob/8d0c2bd93d450d2b1e4c61d739d0ed3afe591a7c/internal/collector/event_accumulator.go#L235).
 
-`SchedulerStateDead` sets `alive=false`, but the entry is never removed from `tracks`. `Advance()` continues traversing the entire map, merely skipping dead entries. Reproduction: 10,000 distinct TIDs received switch-in and switch-out-to-dead events; after all windows were finalized, the map still contained 10,000 entries. Memory use and traversal cost depend on historical TIDs rather than live threads. TID reuse eventually limits growth, but this still degrades long-running profiling of a process that frequently creates threads.
+`SchedulerStateDead` sets `alive=false`, but the entry is never removed from `tracks`. `Advance()` continues traversing the entire map, merely skipping dead entries. A unit-level reproduction supplied synthetic switch-in and switch-out-to-dead events for 10,000 distinct TIDs directly to the accumulator. After advancing through the relevant windows, the map still contained 10,000 entries. This confirms retained state and continued traversal of historical TIDs. It did not create 10,000 Linux threads or benchmark heap size, RSS, or CPU overhead. Increased memory and iteration cost during long-running thread churn are consequences of the retained map; the size of that overhead remains unmeasured. TID reuse can limit map growth.
 
 Proposed fix: release completed tracks after safely advancing the watermark and preserving their final window statistics. Test late events, TID reuse, exit at a window boundary, and sustained thread churn.
 
@@ -26,7 +26,7 @@ Proposed fix: release completed tracks after safely advancing the watermark and 
 
 Location: [internal/output/table.go:38](https://github.com/BogdanDolia/tsastat/blob/8d0c2bd93d450d2b1e4c61d739d0ed3afe591a7c/internal/output/table.go#L38).
 
-`stat.Comm` is passed to tabwriter without escaping. A test using `worker\x1b[2J\nX` preserved the ESC sequence in the output bytes and split the table row. A terminal may interpret screen-control sequences, while tabs and newlines alter the report structure. This is an output-rendering defect; the test did not establish arbitrary shell-command execution.
+`stat.Comm` is passed to tabwriter without escaping. A renderer test captured output in a byte buffer using the synthetic name `worker\x1b[2J\nX`; the ESC sequence and embedded newline remained in the output. A terminal may interpret screen-control sequences, while tabs and newlines alter the report structure. The test confirmed unsafe output bytes; it did not execute terminal controls interactively or establish arbitrary shell-command execution.
 
 Proposed fix: render control characters as visible escape sequences in the table renderer. Preserve the original name in the model and correctly escaped JSON. Test ESC, CR/LF, tabs, Unicode, and long names.
 
@@ -34,7 +34,7 @@ Proposed fix: render control characters as visible escape sequences in the table
 
 Location: [site/app.js:172](https://github.com/BogdanDolia/tsastat/blob/8d0c2bd93d450d2b1e4c61d739d0ed3afe591a7c/site/app.js#L172), [WAKE AVG column:362](https://github.com/BogdanDolia/tsastat/blob/8d0c2bd93d450d2b1e4c61d739d0ed3afe591a7c/site/app.js#L362).
 
-The viewer checks the general `scheduler.available` flag, which means schedstat is available for the proc backend. Wakeup latency requires an event backend. Proc exports contain `event_timed=false` and zero-valued wakeup fields, so the website displays `WAKE AVG=0 µs`. This was reproduced on the published website using JSON produced by the actual Go renderer. The CLI table already handles the unavailable metric correctly by checking `SchedulerSource == ebpf_sched_events`.
+The viewer checks the general `scheduler.available` flag, which means schedstat is available for the proc backend. Wakeup latency requires an event backend. Proc exports contain `event_timed=false` and zero-valued wakeup fields, so the website displays `WAKE AVG=0 µs`. This was reproduced on the published website using a synthetic proc-shaped input serialized by the actual Go renderer. The fixture was not a live proc capture. The CLI table already handles the unavailable metric correctly by checking `SchedulerSource == ebpf_sched_events`.
 
 Proposed fix: determine availability separately for each metric. For wakeup latency, consider event timing and the number of measurements. The table, tooltip, and sorting behavior must distinguish no measurement from a measured zero.
 
@@ -42,7 +42,7 @@ Proposed fix: determine availability separately for each metric. For wakeup late
 
 Location: [site/app.js:291](https://github.com/BogdanDolia/tsastat/blob/8d0c2bd93d450d2b1e4c61d739d0ed3afe591a7c/site/app.js#L291).
 
-When `scheduler.available=false`, the table shows dashes, but the bar label is calculated as `(cpu ?? 0) + (runqueue ?? 0)` and displays `0 ms`. This scenario applies to the explicit taskstats backend or proc without accessible schedstat data. On the published website, the accessibility label `— CPU, — runqueue`, an empty bar, and a value of `0ms` appeared together.
+When `scheduler.available=false`, the table shows dashes, but the bar label is calculated as `(cpu ?? 0) + (runqueue ?? 0)` and displays `0 ms`. This availability condition can occur with the explicit taskstats backend or proc without accessible schedstat data. The browser reproduction used a copy of the synthetic proc fixture with `backend=taskstats` and `scheduler.available=false`; it was not a live taskstats capture. On the published website, the accessibility label `— CPU, — runqueue`, an empty bar, and a value of `0ms` appeared together.
 
 Proposed fix: preserve unavailability throughout the presentation. If both metrics are absent, show a “Scheduler metrics unavailable” state. If availability is partial, do not present the sum as complete. Apply the same principle to delay aggregates by showing how many visible threads are actually covered by measurements.
 
@@ -58,7 +58,7 @@ Proposed fix: fully validate and normalize the new document before changing the 
 
 Location: [site/app.js:414](https://github.com/BogdanDolia/tsastat/blob/8d0c2bd93d450d2b1e4c61d739d0ed3afe591a7c/site/app.js#L414).
 
-The identity key uses `start_time_ticks ?? start_time_ns`. However, `0` can indicate an unavailable proc identity, and `??` does not fall back for zero. For two records with the same TID and `start_time_ticks=0`, but `start_time_ns=100` and `200`, the summary reports one thread instead of two. A separate Node example confirmed this. The finding is limited to the incorrect summary count; this code does not add CPU values from those rows together.
+The identity key uses `start_time_ticks ?? start_time_ns`. However, `0` can indicate an unavailable proc identity, and `??` does not fall back for zero. For two records with the same TID and `start_time_ticks=0`, but `start_time_ns=100` and `200`, the summary's identity expression counts one thread instead of two. A Node reproduction evaluated that expression against synthetic records; live PID/TID reuse was not exercised. The finding is limited to the incorrect summary count; this code does not add CPU values from those rows together.
 
 Proposed fix: choose a proven nonzero identity and include PID/session identity. Do not fabricate a reliable identity when both start-time fields are unknown. Prefer strings for long identifiers to avoid JavaScript Number precision limits.
 
@@ -83,7 +83,7 @@ The viewer is useful for inspecting an individual interval, but it is insufficie
 | Priority | Change | Practical outcome |
 | --- | --- | --- |
 | First phase | Fix the seven findings and add JSON/viewer CI checks | Reliable metrics and predictable import behavior |
-| First phase | A report-wide timeline for CPU, RQ, D-state, and quality, with navigation to the worst interval | Find spikes without moving through every slider position |
+| First phase | A report-wide timeline for CPU, RQ, wakeup/resource delays, D-state, and quality, with navigation to peak intervals | Find CPU, contention, and latency spikes without moving through every slider position |
 | First phase | A selected-thread detail view with all intervals, state-duration bars, wakeup avg/max/count, and all delay subtypes | Inspect rare delays, thread lifetime, and causes of waiting |
 | First phase | A complete quality and coverage panel for each source | Understand which parts of a report support a given conclusion |
 | Second phase | Process summary and selection of multiple intervals | Analyze the whole process and a workload segment |
@@ -105,6 +105,8 @@ For Pages, useful additions include a short interpretation guide for CPU-bound w
 
 **Verification and observed results**
 
+The table records the original review run. During this documentation correction, the temporary reproduction copy was verified against every tracked file at the reviewed SHA, and the targeted Go and Node probes were rerun with the same results. The full standard suite, Docker runtime checks, and published-browser checks were not rerun for this documentation change.
+
 | Check | Result |
 | --- | --- |
 | Local HEAD and GitHub main at review time | Matched: `8d0c2bd93d450d2b1e4c61d739d0ed3afe591a7c` |
@@ -116,19 +118,21 @@ For Pages, useful additions include a short interpretation guide for CPU-bound w
 | Live proc | 13 threads, three 200 ms windows, exit code 0 |
 | Live auto without privileges | Three windows, `active_sources=[proc]`, `unavailable_sources=[ebpf,taskstats]` |
 | Explicit taskstats/eBPF without privileges | Expected permission errors; no successful capture was reported |
-| Separate Go regression probes | Confirmed number truncation, retention of 10,000 dead tracks, and unescaped control characters |
-| Viewer checks in Node | Confirmed invalid thread entries, zero-versus-unavailable wakeup, and incorrect identity counts |
-| Published viewer in a browser | Checked the demo, slider, filter, renderer-generated JSON import, unavailable-metrics chart, and state corruption after an invalid import |
+| Separate Go probes with synthetic inputs | B1: nonzero durations exported as zero; B2: 10,000 dead tracks retained; B3: raw ESC/newline bytes; B4 fixture: proc schedstat available, event timing absent, wakeup zero |
+| Viewer checks in Node | B4: wakeup helper returns zero for the proc fixture; B6: parser accepts a null thread and filtering throws; B7: the identity expression counts one lifetime instead of two |
+| Published viewer in a browser | Demo, slider, and filter checked; B4/B5 reproduced using synthetic imports; B6 reproduced by loading a valid report, importing a null thread, and using the filter |
 | Mobile widths of 390 and 360 px | No horizontal page overflow; the table has its own scrolling area |
 | Repository state during the original analysis | Source code was unchanged |
 
-Separate regression probes asserted the expected correct behavior and failed on the identified defects. They have not been added to the standard test suite; a passing standard CI run does not mean the findings are fixed. Findings 1–7 describe the scenarios, input values, and observed results. Implementing the fixes should include turning these scenarios into permanent regression tests.
+Three Go probes asserted the expected correct behavior and failed on B1, B2, and B3. The proc-availability Go probe passed while logging the fixture's values. The Node checks logged observed values and caught exceptions, so their process exited successfully even though they demonstrated defects. These probes have not been added to the standard test suite; a passing standard CI run does not mean the findings are fixed. Findings 1–7 describe the scenarios, input values, and observed results. Implementing the fixes should include turning these scenarios into permanent regression tests.
 
 CI currently runs Go formatting, vet, tests, builds, and a GoReleaser snapshot, but no JS unit/browser tests or CLI → viewer contract checks. The Pages workflow uploads `site` directly. Existing CI cannot detect the website defects described here. The minimum next set of checks should cover fixtures from every backend, sub-millisecond metrics, unavailable data, PID/TID reuse, malformed imports that preserve the previous state, XSS/control strings, empty results, keyboard navigation, and mobile widths. Validate against JSON generated by the current Go renderer, not only a hand-authored demo.
 
 **Remaining review limitations**
 
-A full live eBPF/taskstats capture with elevated permissions was not performed. Runtime checks were limited to an isolated unprivileged container; Linux unit tests ran separately. Successful BPF-object compilation and unit tests do not replace loading programs, attaching them, and validating measurements on a real kernel.
+A full live eBPF/taskstats capture with elevated permissions was not performed. Automatic approval review rejected the proposed Docker run with the host PID namespace, BPF/PERFMON/NET_ADMIN capabilities, and unconfined seccomp because it could expose processes and telemetry outside the test. That run did not execute. Linux unit tests and isolated unprivileged runtime checks were performed instead.
+
+The successful Linux builds were Go builds using the repository's existing embedded BPF objects; no fresh compilation of the BPF C programs is claimed. Building the CLI and passing unit tests do not establish that BPF programs can be loaded, attached, or produce accurate live measurements. The remaining privileged checks are unverified, rather than tests that ran and failed.
 
 Consequently, this review does not establish live tracing behavior across kernels, ring-buffer loss under load, sustained churn with real eBPF events, time-namespace offsets, or taskstats accuracy with delayacct enabled. These require separate short tests in a dedicated Linux environment with explicit tracing authorization.
 
