@@ -1,4 +1,4 @@
-module github.com/BogdanDolia/tsastat
+module github.com/HelixThinker/tsastat
 
 go 1.22
 

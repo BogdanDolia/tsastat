@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/BogdanDolia/tsastat/internal/model"
+	"github.com/HelixThinker/tsastat/internal/model"
 )
 
 func TestWriteAutoDocumentsSelectionAndFallback(t *testing.T) {

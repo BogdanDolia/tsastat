@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/BogdanDolia/tsastat/internal/model"
+	"github.com/HelixThinker/tsastat/internal/model"
 )
 
 const procSamplingMethod = "procfs_midpoint"

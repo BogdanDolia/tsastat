@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/BogdanDolia/tsastat/internal/model"
+	"github.com/HelixThinker/tsastat/internal/model"
 	"golang.org/x/sys/unix"
 )
 

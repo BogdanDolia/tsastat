@@ -4,11 +4,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/BogdanDolia/tsastat/internal/backend/ebpf"
-	"github.com/BogdanDolia/tsastat/internal/backend/hybrid"
-	"github.com/BogdanDolia/tsastat/internal/backend/proc"
-	"github.com/BogdanDolia/tsastat/internal/backend/taskstats"
-	"github.com/BogdanDolia/tsastat/internal/model"
+	"github.com/HelixThinker/tsastat/internal/backend/ebpf"
+	"github.com/HelixThinker/tsastat/internal/backend/hybrid"
+	"github.com/HelixThinker/tsastat/internal/backend/proc"
+	"github.com/HelixThinker/tsastat/internal/backend/taskstats"
+	"github.com/HelixThinker/tsastat/internal/model"
 )
 
 var (

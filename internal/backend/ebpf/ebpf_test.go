@@ -3,7 +3,7 @@ package ebpf
 import (
 	"testing"
 
-	"github.com/BogdanDolia/tsastat/internal/model"
+	"github.com/HelixThinker/tsastat/internal/model"
 )
 
 func TestStateAfterSwitch(t *testing.T) {

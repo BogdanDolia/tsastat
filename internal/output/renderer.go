@@ -6,7 +6,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/BogdanDolia/tsastat/internal/model"
+	"github.com/HelixThinker/tsastat/internal/model"
 )
 
 var ErrOutputNotImplemented = errors.New("output format not implemented")

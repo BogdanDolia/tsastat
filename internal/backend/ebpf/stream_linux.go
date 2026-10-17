@@ -17,8 +17,8 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"golang.org/x/sys/unix"
 
-	"github.com/BogdanDolia/tsastat/internal/backend/proc"
-	"github.com/BogdanDolia/tsastat/internal/model"
+	"github.com/HelixThinker/tsastat/internal/backend/proc"
+	"github.com/HelixThinker/tsastat/internal/model"
 )
 
 type eventStream struct {

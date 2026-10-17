@@ -5,7 +5,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/BogdanDolia/tsastat/internal/model"
+	"github.com/HelixThinker/tsastat/internal/model"
 )
 
 type JSONRenderer struct {
