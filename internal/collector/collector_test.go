@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BogdanDolia/tsastat/internal/backend"
-	"github.com/BogdanDolia/tsastat/internal/model"
+	"github.com/HelixThinker/tsastat/internal/backend"
+	"github.com/HelixThinker/tsastat/internal/model"
 )
 
 func TestCollectorSamplesRepeatedlyBeforeFixedReport(t *testing.T) {

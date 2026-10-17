@@ -1,6 +1,6 @@
 package ebpf
 
-import "github.com/BogdanDolia/tsastat/internal/model"
+import "github.com/HelixThinker/tsastat/internal/model"
 
 const eventFlagPreempted uint32 = 1
 

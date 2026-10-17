@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"runtime"
 
-	"github.com/BogdanDolia/tsastat/internal/model"
+	"github.com/HelixThinker/tsastat/internal/model"
 )
 
 func (b *Backend) OpenSchedulerEvents(context.Context, int) (model.SchedulerEventStream, error) {

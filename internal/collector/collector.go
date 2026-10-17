@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/BogdanDolia/tsastat/internal/backend"
-	"github.com/BogdanDolia/tsastat/internal/model"
+	"github.com/HelixThinker/tsastat/internal/backend"
+	"github.com/HelixThinker/tsastat/internal/model"
 )
 
 type Collector struct {

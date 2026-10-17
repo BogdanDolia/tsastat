@@ -8,7 +8,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/BogdanDolia/tsastat/internal/model"
+	"github.com/HelixThinker/tsastat/internal/model"
 )
 
 type TableRenderer struct {
